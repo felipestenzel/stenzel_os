@@ -1,0 +1,19 @@
+[package]
+name = "sh"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sh"
+path = "src/main.rs"
+
+[dependencies]
+stenzel_libc = { path = "../libc" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

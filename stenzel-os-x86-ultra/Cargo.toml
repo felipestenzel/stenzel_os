@@ -1,0 +1,13 @@
+[workspace]
+members = ["kernel", "os"]
+resolver = "2"
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = 3

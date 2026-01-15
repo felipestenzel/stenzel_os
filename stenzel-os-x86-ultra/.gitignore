@@ -1,0 +1,6 @@
+**/target
+**/*.img
+**/*.iso
+**/*.bin
+**/*.elf
+/Cargo.lock

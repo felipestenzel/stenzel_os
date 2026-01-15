@@ -1,0 +1,18 @@
+[package]
+name = "stenzel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+bootloader = "0.11"
+
+# Kernel como artifact dependency (precisa nightly + -Z bindeps)
+[dependencies.stenzel_kernel]
+path = "../kernel"
+artifact = "bin"
+target = "x86_64-unknown-none"
+
+[build-dependencies]
+anyhow = "1.0"
+bootloader = "0.11"

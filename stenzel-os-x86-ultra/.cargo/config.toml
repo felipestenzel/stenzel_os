@@ -1,0 +1,13 @@
+[unstable]
+bindeps = true
+
+[build]
+# Kernel compila para bare-metal; runner (os crate) compila para host
+# O stenzel_kernel tem forced-target configurado, mas caso contrário:
+# target = "x86_64-unknown-none"  # <-- não queremos isso pois o runner precisa do host
+
+[target.x86_64-unknown-none]
+rustflags = [
+  "-C", "relocation-model=static",
+  "-C", "code-model=kernel",
+]
