@@ -23,9 +23,9 @@ pub fn read_byte() -> Option<u8> {
     None
 }
 
-/// Verifica se há input disponível.
+/// Verifica se há input disponível (SEM consumir dados).
 pub fn has_input() -> bool {
-    crate::drivers::keyboard::has_input() || crate::serial::read_byte().is_some()
+    crate::drivers::keyboard::has_input() || crate::serial::has_data()
 }
 
 /// Alias para has_input() - usado por poll/select.

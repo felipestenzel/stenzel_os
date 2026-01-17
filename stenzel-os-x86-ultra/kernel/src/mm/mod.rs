@@ -9,7 +9,11 @@
     mod heap;
     mod paging;
     mod phys;
+    pub mod cow;
     pub mod vma;
+    pub mod swap;
+    pub mod numa;
+    pub mod huge_pages;
 
     pub use phys::{BitmapFrameAllocator, BootInfoFrameAllocator};
 
@@ -129,4 +133,41 @@
     /// Retorna o endereço virtual para acesso a uma região MMIO.
     pub fn mmio_virt_addr(phys_base: u64) -> VirtAddr {
         phys_to_virt(x86_64::PhysAddr::new(phys_base))
+    }
+
+    /// Retorna estatísticas de memória: (total_frames, free_frames, used_frames).
+    /// Usado por /proc/meminfo.
+    pub fn memory_stats() -> (usize, usize, usize) {
+        let stats = frame_allocator_stats();
+        (stats.total, stats.free, stats.used)
+    }
+
+    /// Traduz um endereço virtual para físico usando o CR3 atual.
+    /// Usado pelo page fault handler para endereços de user space.
+    pub fn virt_to_phys_current(va: VirtAddr) -> Option<x86_64::PhysAddr> {
+        paging::translate_current_cr3(va, physical_memory_offset())
+    }
+
+    // ============================================================
+    // Huge Pages API (2MB and 1GB pages)
+    // ============================================================
+
+    /// Initialize the huge pages subsystem.
+    pub fn init_huge_pages() {
+        huge_pages::init();
+    }
+
+    /// Check if the CPU supports 2MB huge pages.
+    pub fn supports_huge_2mb() -> bool {
+        huge_pages::supports_2mb()
+    }
+
+    /// Check if the CPU supports 1GB huge pages.
+    pub fn supports_huge_1gb() -> bool {
+        huge_pages::supports_1gb()
+    }
+
+    /// Get huge page statistics.
+    pub fn huge_page_stats() -> huge_pages::HugePageStats {
+        huge_pages::get_stats()
     }

@@ -1,8 +1,15 @@
 //! Socket API para userspace
+//!
+//! Supports:
+//! - AF_INET (IPv4) sockets: TCP and UDP
+//! - AF_UNIX (Unix domain) sockets: local IPC
 
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use super::{Ipv4Addr, tcp, udp};
 use crate::sync::IrqSafeMutex;
@@ -10,8 +17,8 @@ use crate::sync::IrqSafeMutex;
 /// Tipos de socket
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketType {
-    Stream,     // TCP
-    Datagram,   // UDP
+    Stream,     // TCP or Unix stream
+    Datagram,   // UDP or Unix datagram
     Raw,        // Raw IP
 }
 
@@ -72,6 +79,145 @@ impl SocketAddr {
     }
 }
 
+// ==================== Unix Domain Sockets ====================
+
+/// Maximum path length for Unix socket addresses
+const UNIX_PATH_MAX: usize = 108;
+
+/// Unix socket address (sun_path)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnixSocketAddr {
+    /// Pathname (empty string for unnamed sockets)
+    pub path: String,
+}
+
+impl UnixSocketAddr {
+    pub fn new(path: &str) -> Self {
+        Self { path: String::from(path) }
+    }
+
+    pub fn unnamed() -> Self {
+        Self { path: String::new() }
+    }
+
+    /// Parse from sockaddr_un structure
+    pub fn from_sockaddr_un(data: &[u8]) -> Option<Self> {
+        if data.len() < 2 {
+            return None;
+        }
+        // sun_family (2 bytes) + sun_path (up to 108 bytes)
+        let family = u16::from_ne_bytes([data[0], data[1]]);
+        if family != 1 {
+            // AF_UNIX = 1
+            return None;
+        }
+        if data.len() > 2 {
+            // Find null terminator or end of data
+            let path_bytes = &data[2..];
+            let path_len = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
+            let path = core::str::from_utf8(&path_bytes[..path_len]).ok()?;
+            Some(Self { path: String::from(path) })
+        } else {
+            Some(Self::unnamed())
+        }
+    }
+
+    /// Convert to sockaddr_un
+    pub fn to_sockaddr_un(&self) -> [u8; 110] {
+        let mut buf = [0u8; 110];
+        buf[0] = 1; // AF_UNIX
+        buf[1] = 0;
+        let path_bytes = self.path.as_bytes();
+        let copy_len = path_bytes.len().min(UNIX_PATH_MAX - 1);
+        buf[2..2 + copy_len].copy_from_slice(&path_bytes[..copy_len]);
+        buf
+    }
+}
+
+/// Shared buffer for Unix stream sockets
+struct UnixStreamBuffer {
+    /// Data waiting to be read
+    data: VecDeque<u8>,
+    /// Maximum buffer size (default 64KB)
+    max_size: usize,
+    /// Reader has closed their end
+    reader_closed: bool,
+    /// Writer has closed their end
+    writer_closed: bool,
+}
+
+impl UnixStreamBuffer {
+    fn new() -> Self {
+        Self {
+            data: VecDeque::new(),
+            max_size: 65536,
+            reader_closed: false,
+            writer_closed: false,
+        }
+    }
+
+    fn write(&mut self, buf: &[u8]) -> usize {
+        let available = self.max_size.saturating_sub(self.data.len());
+        let to_write = buf.len().min(available);
+        for &b in &buf[..to_write] {
+            self.data.push_back(b);
+        }
+        to_write
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> usize {
+        let to_read = buf.len().min(self.data.len());
+        for i in 0..to_read {
+            buf[i] = self.data.pop_front().unwrap();
+        }
+        to_read
+    }
+
+    fn available(&self) -> usize {
+        self.data.len()
+    }
+
+    fn is_eof(&self) -> bool {
+        self.writer_closed && self.data.is_empty()
+    }
+}
+
+/// Unix socket pair connection state
+struct UnixConnection {
+    /// Buffer for data flowing in one direction (socket A -> socket B)
+    buffer_a_to_b: UnixStreamBuffer,
+    /// Buffer for data flowing in the other direction (socket B -> socket A)
+    buffer_b_to_a: UnixStreamBuffer,
+}
+
+impl UnixConnection {
+    fn new() -> Self {
+        Self {
+            buffer_a_to_b: UnixStreamBuffer::new(),
+            buffer_b_to_a: UnixStreamBuffer::new(),
+        }
+    }
+}
+
+/// Unix domain socket listener (for servers)
+struct UnixListener {
+    /// Path this listener is bound to
+    path: String,
+    /// Pending connections (socket IDs waiting to be accepted)
+    pending: VecDeque<u64>,
+    /// Maximum pending connections
+    backlog: usize,
+}
+
+/// Global registry of bound Unix sockets
+static UNIX_LISTENERS: IrqSafeMutex<BTreeMap<String, UnixListener>> = IrqSafeMutex::new(BTreeMap::new());
+
+/// Global registry of Unix connections
+static UNIX_CONNECTIONS: IrqSafeMutex<BTreeMap<u64, Arc<IrqSafeMutex<UnixConnection>>>> = IrqSafeMutex::new(BTreeMap::new());
+
+/// Next connection ID
+static mut NEXT_UNIX_CONN_ID: u64 = 1;
+
 /// Socket interno
 pub struct Socket {
     pub id: u64,
@@ -84,6 +230,12 @@ pub struct Socket {
     pub tcp_key: Option<tcp::TcpConnKey>,
     /// Para UDP: porta local alocada
     pub udp_port: Option<u16>,
+    /// Para Unix domain sockets: endereço local
+    pub unix_local_addr: Option<UnixSocketAddr>,
+    /// Para Unix domain sockets: conexão ID (shared with peer)
+    pub unix_conn_id: Option<u64>,
+    /// Para Unix domain sockets: se este é o lado "A" da conexão (para direcionar buffers)
+    pub unix_is_side_a: bool,
     /// Opções
     pub nonblocking: bool,
 }
@@ -99,6 +251,9 @@ impl Socket {
             remote_addr: None,
             tcp_key: None,
             udp_port: None,
+            unix_local_addr: None,
+            unix_conn_id: None,
+            unix_is_side_a: false,
             nonblocking: false,
         }
     }
@@ -118,6 +273,7 @@ pub fn init() {
 /// Cria um novo socket
 pub fn socket(domain: i32, sock_type: i32, _protocol: i32) -> crate::util::KResult<u64> {
     let domain = match domain {
+        1 => SocketDomain::Unix,  // AF_UNIX / AF_LOCAL
         2 => SocketDomain::Inet,  // AF_INET
         _ => return Err(crate::util::KError::NotSupported),
     };
@@ -429,22 +585,32 @@ for _ in 0..1000 { core::hint::spin_loop(); }
 
 /// Fecha um socket
 pub fn close(sockfd: u64) -> crate::util::KResult<()> {
+    // First, handle Unix socket cleanup (before removing from SOCKETS)
+    unix_close(sockfd);
+
     let mut sockets = SOCKETS.lock();
     let sock = sockets.remove(&sockfd).ok_or(crate::util::KError::Invalid)?;
 
-    match sock.sock_type {
-        SocketType::Stream => {
-            if let Some(key) = sock.tcp_key {
-                drop(sockets);
-                let _ = tcp::close(&key);
+    match sock.domain {
+        SocketDomain::Unix => {
+            // Already handled by unix_close() above
+        }
+        SocketDomain::Inet | SocketDomain::Inet6 => {
+            match sock.sock_type {
+                SocketType::Stream => {
+                    if let Some(key) = sock.tcp_key {
+                        drop(sockets);
+                        let _ = tcp::close(&key);
+                    }
+                }
+                SocketType::Datagram => {
+                    if let Some(port) = sock.udp_port {
+                        udp::unbind(port);
+                    }
+                }
+                _ => {}
             }
         }
-        SocketType::Datagram => {
-            if let Some(port) = sock.udp_port {
-                udp::unbind(port);
-            }
-        }
-        _ => {}
     }
 
     Ok(())
@@ -510,6 +676,12 @@ pub fn poll_read(sockfd: u64) -> bool {
         None => return false,
     };
 
+    // Check domain first
+    if sock.domain == SocketDomain::Unix {
+        drop(sockets);
+        return unix_poll_read(sockfd);
+    }
+
     match sock.sock_type {
         SocketType::Stream => {
             if let Some(ref key) = sock.tcp_key {
@@ -545,6 +717,28 @@ pub fn poll_write(sockfd: u64) -> bool {
         None => return false,
     };
 
+    // Check domain first
+    if sock.domain == SocketDomain::Unix {
+        // Unix sockets are always ready for writing (unless buffer is full)
+        if sock.state == SocketState::Connected {
+            if let Some(conn_id) = sock.unix_conn_id {
+                let is_side_a = sock.unix_is_side_a;
+                drop(sockets);
+                let connections = UNIX_CONNECTIONS.lock();
+                if let Some(conn_arc) = connections.get(&conn_id) {
+                    let conn = conn_arc.lock();
+                    let buffer = if is_side_a {
+                        &conn.buffer_a_to_b
+                    } else {
+                        &conn.buffer_b_to_a
+                    };
+                    return !buffer.reader_closed && buffer.available() < buffer.max_size;
+                }
+            }
+        }
+        return false;
+    }
+
     match sock.sock_type {
         SocketType::Stream => {
             if let Some(ref key) = sock.tcp_key {
@@ -560,4 +754,426 @@ pub fn poll_write(sockfd: u64) -> bool {
         }
         _ => false,
     }
+}
+
+/// Returns the number of bytes available to read from the socket (for FIONREAD ioctl)
+pub fn available(sockfd: u64) -> usize {
+    let sockets = SOCKETS.lock();
+    let sock = match sockets.get(&sockfd) {
+        Some(s) => s,
+        None => return 0,
+    };
+
+    // Extract the info we need while holding the lock
+    let domain = sock.domain;
+    let state = sock.state;
+    let sock_type = sock.sock_type;
+    let conn_id = sock.unix_conn_id;
+    let is_side_a = sock.unix_is_side_a;
+    let tcp_key = sock.tcp_key.clone();
+    let udp_port = sock.udp_port;
+
+    // Drop the lock before accessing other resources
+    drop(sockets);
+
+    // Check domain first
+    if domain == SocketDomain::Unix {
+        if state == SocketState::Connected {
+            if let Some(cid) = conn_id {
+                let connections = UNIX_CONNECTIONS.lock();
+                if let Some(conn_arc) = connections.get(&cid) {
+                    let conn = conn_arc.lock();
+                    let buffer = if is_side_a {
+                        &conn.buffer_b_to_a // A reads from B's buffer
+                    } else {
+                        &conn.buffer_a_to_b // B reads from A's buffer
+                    };
+                    return buffer.available();
+                }
+            }
+        }
+        return 0;
+    }
+
+    match sock_type {
+        SocketType::Stream => {
+            if let Some(key) = tcp_key {
+                tcp::available_data(&key)
+            } else {
+                0
+            }
+        }
+        SocketType::Datagram => {
+            if let Some(port) = udp_port {
+                udp::available_data(port)
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
+// ==================== Unix Domain Socket Operations ====================
+
+/// Bind a Unix domain socket to a path
+pub fn unix_bind(sockfd: u64, addr: &UnixSocketAddr) -> crate::util::KResult<()> {
+    let mut sockets = SOCKETS.lock();
+    let sock = sockets.get_mut(&sockfd).ok_or(crate::util::KError::Invalid)?;
+
+    if sock.domain != SocketDomain::Unix {
+        return Err(crate::util::KError::Invalid);
+    }
+
+    if sock.state != SocketState::Created {
+        return Err(crate::util::KError::Invalid);
+    }
+
+    // Check if path is already bound
+    {
+        let listeners = UNIX_LISTENERS.lock();
+        if listeners.contains_key(&addr.path) {
+            return Err(crate::util::KError::AlreadyExists);
+        }
+    }
+
+    sock.unix_local_addr = Some(addr.clone());
+    sock.state = SocketState::Bound;
+
+    Ok(())
+}
+
+/// Listen on a Unix domain socket
+pub fn unix_listen(sockfd: u64, backlog: i32) -> crate::util::KResult<()> {
+    let mut sockets = SOCKETS.lock();
+    let sock = sockets.get_mut(&sockfd).ok_or(crate::util::KError::Invalid)?;
+
+    if sock.domain != SocketDomain::Unix {
+        return Err(crate::util::KError::Invalid);
+    }
+
+    if sock.sock_type != SocketType::Stream {
+        return Err(crate::util::KError::NotSupported);
+    }
+
+    let addr = sock.unix_local_addr.as_ref().ok_or(crate::util::KError::Invalid)?;
+
+    // Create listener entry
+    let mut listeners = UNIX_LISTENERS.lock();
+
+    // Check again (someone might have bound meanwhile)
+    if listeners.contains_key(&addr.path) {
+        return Err(crate::util::KError::AlreadyExists);
+    }
+
+    listeners.insert(addr.path.clone(), UnixListener {
+        path: addr.path.clone(),
+        pending: VecDeque::new(),
+        backlog: backlog.max(1) as usize,
+    });
+
+    sock.state = SocketState::Listening;
+
+    Ok(())
+}
+
+/// Accept a connection on a Unix domain socket
+pub fn unix_accept(sockfd: u64) -> crate::util::KResult<(u64, UnixSocketAddr)> {
+    let (path, nonblocking) = {
+        let sockets = SOCKETS.lock();
+        let sock = sockets.get(&sockfd).ok_or(crate::util::KError::Invalid)?;
+
+        if sock.domain != SocketDomain::Unix || sock.state != SocketState::Listening {
+            return Err(crate::util::KError::Invalid);
+        }
+
+        let addr = sock.unix_local_addr.as_ref().ok_or(crate::util::KError::Invalid)?;
+        (addr.path.clone(), sock.nonblocking)
+    };
+
+    let max_iterations = if nonblocking { 1 } else { 30_000 };
+
+    for _ in 0..max_iterations {
+        // Check for pending connections
+        {
+            let mut listeners = UNIX_LISTENERS.lock();
+            if let Some(listener) = listeners.get_mut(&path) {
+                if let Some(client_sock_id) = listener.pending.pop_front() {
+                    // Create a new socket for the accepted connection
+                    let new_id = unsafe {
+                        let id = NEXT_SOCKET_ID;
+                        NEXT_SOCKET_ID += 1;
+                        id
+                    };
+
+                    // Get connection from client socket
+                    let conn_id = {
+                        let sockets = SOCKETS.lock();
+                        let client_sock = sockets.get(&client_sock_id).ok_or(crate::util::KError::Invalid)?;
+                        client_sock.unix_conn_id.ok_or(crate::util::KError::Invalid)?
+                    };
+
+                    // Create server-side socket
+                    let mut new_sock = Socket::new(new_id, SocketDomain::Unix, SocketType::Stream);
+                    new_sock.state = SocketState::Connected;
+                    new_sock.unix_local_addr = Some(UnixSocketAddr::new(&path));
+                    new_sock.unix_conn_id = Some(conn_id);
+                    new_sock.unix_is_side_a = false; // Server is side B
+
+                    let mut sockets = SOCKETS.lock();
+                    sockets.insert(new_id, new_sock);
+
+                    return Ok((new_id, UnixSocketAddr::unnamed()));
+                }
+            }
+        }
+
+        if nonblocking {
+            return Err(crate::util::KError::WouldBlock);
+        }
+
+        // Yield CPU briefly
+        for _ in 0..1000 { core::hint::spin_loop(); }
+    }
+
+    Err(crate::util::KError::WouldBlock)
+}
+
+/// Connect to a Unix domain socket
+pub fn unix_connect(sockfd: u64, addr: &UnixSocketAddr) -> crate::util::KResult<()> {
+    // First, check if there's a listener at the target path
+    {
+        let mut listeners = UNIX_LISTENERS.lock();
+        let listener = listeners.get_mut(&addr.path).ok_or(crate::util::KError::NotFound)?;
+
+        if listener.pending.len() >= listener.backlog {
+            return Err(crate::util::KError::WouldBlock);
+        }
+
+        // Create a new connection
+        let conn_id = unsafe {
+            let id = NEXT_UNIX_CONN_ID;
+            NEXT_UNIX_CONN_ID += 1;
+            id
+        };
+
+        let conn = Arc::new(IrqSafeMutex::new(UnixConnection::new()));
+
+        {
+            let mut connections = UNIX_CONNECTIONS.lock();
+            connections.insert(conn_id, conn);
+        }
+
+        // Update the connecting socket
+        {
+            let mut sockets = SOCKETS.lock();
+            let sock = sockets.get_mut(&sockfd).ok_or(crate::util::KError::Invalid)?;
+
+            if sock.domain != SocketDomain::Unix {
+                return Err(crate::util::KError::Invalid);
+            }
+
+            sock.state = SocketState::Connected;
+            sock.unix_conn_id = Some(conn_id);
+            sock.unix_is_side_a = true; // Client is side A
+        }
+
+        // Add to listener's pending queue
+        listener.pending.push_back(sockfd);
+    }
+
+    Ok(())
+}
+
+/// Send data on a Unix domain socket
+pub fn unix_send(sockfd: u64, data: &[u8]) -> crate::util::KResult<usize> {
+    let (conn_id, is_side_a, nonblocking) = {
+        let sockets = SOCKETS.lock();
+        let sock = sockets.get(&sockfd).ok_or(crate::util::KError::Invalid)?;
+
+        if sock.domain != SocketDomain::Unix || sock.state != SocketState::Connected {
+            return Err(crate::util::KError::Invalid);
+        }
+
+        let conn_id = sock.unix_conn_id.ok_or(crate::util::KError::Invalid)?;
+        (conn_id, sock.unix_is_side_a, sock.nonblocking)
+    };
+
+    let connections = UNIX_CONNECTIONS.lock();
+    let conn_arc = connections.get(&conn_id).ok_or(crate::util::KError::Invalid)?.clone();
+    drop(connections);
+
+    let max_iterations = if nonblocking { 1 } else { 30_000 };
+
+    for _ in 0..max_iterations {
+        let mut conn = conn_arc.lock();
+
+        // Select the correct buffer based on which side we are
+        let buffer = if is_side_a {
+            &mut conn.buffer_a_to_b
+        } else {
+            &mut conn.buffer_b_to_a
+        };
+
+        // Check if the reader has closed
+        if buffer.reader_closed {
+            return Err(crate::util::KError::BrokenPipe);
+        }
+
+        let written = buffer.write(data);
+        if written > 0 {
+            return Ok(written);
+        }
+
+        drop(conn);
+
+        if nonblocking {
+            return Err(crate::util::KError::WouldBlock);
+        }
+
+        // Yield CPU briefly
+        for _ in 0..1000 { core::hint::spin_loop(); }
+    }
+
+    Err(crate::util::KError::WouldBlock)
+}
+
+/// Receive data from a Unix domain socket
+pub fn unix_recv(sockfd: u64, buf: &mut [u8]) -> crate::util::KResult<usize> {
+    let (conn_id, is_side_a, nonblocking) = {
+        let sockets = SOCKETS.lock();
+        let sock = sockets.get(&sockfd).ok_or(crate::util::KError::Invalid)?;
+
+        if sock.domain != SocketDomain::Unix || sock.state != SocketState::Connected {
+            return Err(crate::util::KError::Invalid);
+        }
+
+        let conn_id = sock.unix_conn_id.ok_or(crate::util::KError::Invalid)?;
+        (conn_id, sock.unix_is_side_a, sock.nonblocking)
+    };
+
+    let connections = UNIX_CONNECTIONS.lock();
+    let conn_arc = connections.get(&conn_id).ok_or(crate::util::KError::Invalid)?.clone();
+    drop(connections);
+
+    let max_iterations = if nonblocking { 1 } else { 30_000 };
+
+    for _ in 0..max_iterations {
+        let mut conn = conn_arc.lock();
+
+        // Select the correct buffer based on which side we are (reversed from send)
+        let buffer = if is_side_a {
+            &mut conn.buffer_b_to_a
+        } else {
+            &mut conn.buffer_a_to_b
+        };
+
+        // Check for EOF
+        if buffer.is_eof() {
+            return Ok(0); // EOF
+        }
+
+        let read = buffer.read(buf);
+        if read > 0 {
+            return Ok(read);
+        }
+
+        drop(conn);
+
+        if nonblocking {
+            return Err(crate::util::KError::WouldBlock);
+        }
+
+        // Yield CPU briefly
+        for _ in 0..1000 { core::hint::spin_loop(); }
+    }
+
+    Err(crate::util::KError::WouldBlock)
+}
+
+/// Close a Unix domain socket
+pub fn unix_close(sockfd: u64) {
+    let (conn_id, is_side_a, path) = {
+        let sockets = SOCKETS.lock();
+        if let Some(sock) = sockets.get(&sockfd) {
+            if sock.domain == SocketDomain::Unix {
+                (sock.unix_conn_id, sock.unix_is_side_a, sock.unix_local_addr.as_ref().map(|a| a.path.clone()))
+            } else {
+                (None, false, None)
+            }
+        } else {
+            (None, false, None)
+        }
+    };
+
+    // Mark our side as closed in the connection
+    if let Some(conn_id) = conn_id {
+        let connections = UNIX_CONNECTIONS.lock();
+        if let Some(conn_arc) = connections.get(&conn_id) {
+            let mut conn = conn_arc.lock();
+            if is_side_a {
+                conn.buffer_a_to_b.writer_closed = true;
+                conn.buffer_b_to_a.reader_closed = true;
+            } else {
+                conn.buffer_b_to_a.writer_closed = true;
+                conn.buffer_a_to_b.reader_closed = true;
+            }
+        }
+    }
+
+    // Remove from listeners if this was a listening socket
+    if let Some(path) = path {
+        let mut listeners = UNIX_LISTENERS.lock();
+        listeners.remove(&path);
+    }
+}
+
+/// Get the domain of a socket
+pub fn get_domain(sockfd: u64) -> Option<SocketDomain> {
+    let sockets = SOCKETS.lock();
+    sockets.get(&sockfd).map(|s| s.domain)
+}
+
+/// Check if a Unix socket has data available
+pub fn unix_poll_read(sockfd: u64) -> bool {
+    let (conn_id, is_side_a) = {
+        let sockets = SOCKETS.lock();
+        if let Some(sock) = sockets.get(&sockfd) {
+            if sock.domain == SocketDomain::Unix && sock.state == SocketState::Connected {
+                if let Some(conn_id) = sock.unix_conn_id {
+                    (Some(conn_id), sock.unix_is_side_a)
+                } else {
+                    (None, false)
+                }
+            } else if sock.domain == SocketDomain::Unix && sock.state == SocketState::Listening {
+                // Check for pending connections
+                if let Some(ref addr) = sock.unix_local_addr {
+                    let listeners = UNIX_LISTENERS.lock();
+                    if let Some(listener) = listeners.get(&addr.path) {
+                        return !listener.pending.is_empty();
+                    }
+                }
+                return false;
+            } else {
+                (None, false)
+            }
+        } else {
+            (None, false)
+        }
+    };
+
+    if let Some(conn_id) = conn_id {
+        let connections = UNIX_CONNECTIONS.lock();
+        if let Some(conn_arc) = connections.get(&conn_id) {
+            let conn = conn_arc.lock();
+            let buffer = if is_side_a {
+                &conn.buffer_b_to_a
+            } else {
+                &conn.buffer_a_to_b
+            };
+            return buffer.available() > 0 || buffer.is_eof();
+        }
+    }
+
+    false
 }

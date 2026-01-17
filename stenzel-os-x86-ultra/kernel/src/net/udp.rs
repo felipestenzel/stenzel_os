@@ -232,3 +232,13 @@ pub fn has_data(port: u16) -> bool {
         false
     }
 }
+
+/// Returns the size of the first datagram in the receive queue (for FIONREAD ioctl)
+pub fn available_data(port: u16) -> usize {
+    let sockets = UDP_SOCKETS.lock();
+    if let Some(socket) = sockets.get(&port) {
+        socket.queue.front().map_or(0, |dg| dg.data.len())
+    } else {
+        0
+    }
+}

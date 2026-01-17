@@ -32,17 +32,21 @@ const EXT2_SUPERBLOCK_OFFSET: u64 = 1024;
 const EXT2_ROOT_INO: u32 = 2;
 
 // Tipos de arquivo no inode (i_mode >> 12)
-const EXT2_S_IFREG: u16 = 0x8; // regular file
-const EXT2_S_IFDIR: u16 = 0x4; // directory
-const EXT2_S_IFLNK: u16 = 0xA; // symlink
+const EXT2_S_IFIFO: u16 = 0x1; // FIFO/named pipe
 const EXT2_S_IFCHR: u16 = 0x2; // char device
+const EXT2_S_IFDIR: u16 = 0x4; // directory
 const EXT2_S_IFBLK: u16 = 0x6; // block device
+const EXT2_S_IFREG: u16 = 0x8; // regular file
+const EXT2_S_IFLNK: u16 = 0xA; // symlink
+const EXT2_S_IFSOCK: u16 = 0xC; // socket
 
 // Tipos de dirent (d_type)
 const EXT2_FT_REG_FILE: u8 = 1;
 const EXT2_FT_DIR: u8 = 2;
 const EXT2_FT_CHRDEV: u8 = 3;
 const EXT2_FT_BLKDEV: u8 = 4;
+const EXT2_FT_FIFO: u8 = 5;
+const EXT2_FT_SOCK: u8 = 6;
 const EXT2_FT_SYMLINK: u8 = 7;
 
 // ============================================================================
@@ -714,6 +718,178 @@ impl Ext2Fs {
         Ok(())
     }
 
+    /// Remove uma entrada de diretório
+    fn remove_dir_entry(&self, dir_inode: &mut Ext2Inode, dir_ino: u32, name: &str) -> KResult<u32> {
+        let dir_size = dir_inode.i_size as usize;
+
+        if dir_size == 0 {
+            return Err(KError::NotFound);
+        }
+
+        let mut buf = vec![0u8; dir_size];
+        self.read_inode_data(dir_inode, 0, &mut buf)?;
+
+        let mut offset = 0;
+        let mut prev_offset: Option<usize> = None;
+
+        while offset < dir_size {
+            if offset + 8 > dir_size {
+                break;
+            }
+
+            let entry: Ext2DirEntry = unsafe {
+                core::ptr::read_unaligned(buf.as_ptr().add(offset) as *const _)
+            };
+
+            if entry.inode != 0 && entry.name_len > 0 {
+                let name_start = offset + 8;
+                let name_end = name_start + entry.name_len as usize;
+                if name_end <= dir_size {
+                    let entry_name = core::str::from_utf8(&buf[name_start..name_end])
+                        .unwrap_or("");
+
+                    if entry_name == name {
+                        let removed_ino = entry.inode;
+
+                        if let Some(prev) = prev_offset {
+                            // Mescla com entrada anterior
+                            let prev_entry: Ext2DirEntry = unsafe {
+                                core::ptr::read_unaligned(buf.as_ptr().add(prev) as *const _)
+                            };
+                            let new_rec_len = prev_entry.rec_len + entry.rec_len;
+                            let updated = Ext2DirEntry {
+                                rec_len: new_rec_len,
+                                ..prev_entry
+                            };
+                            unsafe {
+                                core::ptr::write_unaligned(
+                                    buf.as_mut_ptr().add(prev) as *mut Ext2DirEntry,
+                                    updated,
+                                );
+                            }
+                        } else {
+                            // É a primeira entrada - marca como livre
+                            let updated = Ext2DirEntry {
+                                inode: 0,
+                                rec_len: entry.rec_len,
+                                name_len: 0,
+                                file_type: 0,
+                            };
+                            unsafe {
+                                core::ptr::write_unaligned(
+                                    buf.as_mut_ptr().add(offset) as *mut Ext2DirEntry,
+                                    updated,
+                                );
+                            }
+                        }
+
+                        // Escreve buffer de volta
+                        self.write_inode_data(dir_inode, 0, &buf)?;
+                        self.write_inode(dir_ino, dir_inode)?;
+
+                        return Ok(removed_ino);
+                    }
+                }
+            }
+
+            if entry.rec_len == 0 {
+                break;
+            }
+
+            if entry.inode != 0 {
+                prev_offset = Some(offset);
+            }
+            offset += entry.rec_len as usize;
+        }
+
+        Err(KError::NotFound)
+    }
+
+    /// Libera um inode (marca como livre no bitmap)
+    fn free_inode(&self, ino: u32) -> KResult<()> {
+        if ino == 0 || ino > self.total_inodes {
+            return Err(KError::Invalid);
+        }
+
+        let group_idx = ((ino - 1) / self.inodes_per_group) as usize;
+        let inode_in_group = (ino - 1) % self.inodes_per_group;
+        let byte_idx = (inode_in_group / 8) as usize;
+        let bit_idx = (inode_in_group % 8) as usize;
+
+        let mut groups = self.groups.write();
+        let group = &mut groups[group_idx];
+
+        // Lê bitmap
+        let mut bitmap = vec![0u8; self.block_size as usize];
+        Self::read_blocks_raw(&self.device, self.block_size, group.bg_inode_bitmap as u64, 1, &mut bitmap)?;
+
+        // Limpa bit
+        bitmap[byte_idx] &= !(1 << bit_idx);
+
+        // Escreve de volta
+        Self::write_blocks_raw(&self.device, self.block_size, group.bg_inode_bitmap as u64, 1, &bitmap)?;
+
+        group.bg_free_inodes_count += 1;
+
+        Ok(())
+    }
+
+    /// Libera todos os blocos de dados de um inode
+    fn free_inode_blocks(&self, inode: &Ext2Inode) -> KResult<()> {
+        let block_size = self.block_size as usize;
+        let num_blocks = (inode.i_size as usize + block_size - 1) / block_size;
+
+        // Libera blocos diretos
+        for i in 0..core::cmp::min(num_blocks, 12) {
+            if inode.i_block[i] != 0 {
+                self.free_block(inode.i_block[i])?;
+            }
+        }
+
+        // Libera bloco indireto simples e seus blocos
+        if inode.i_block[12] != 0 {
+            self.free_indirect_block(inode.i_block[12], 1)?;
+        }
+
+        // Libera bloco indireto duplo
+        if inode.i_block[13] != 0 {
+            self.free_indirect_block(inode.i_block[13], 2)?;
+        }
+
+        // Libera bloco indireto triplo
+        if inode.i_block[14] != 0 {
+            self.free_indirect_block(inode.i_block[14], 3)?;
+        }
+
+        Ok(())
+    }
+
+    /// Libera um bloco indireto e seus filhos recursivamente
+    fn free_indirect_block(&self, block: u32, level: u32) -> KResult<()> {
+        if block == 0 {
+            return Ok(());
+        }
+
+        if level > 1 {
+            // Lê os ponteiros e libera recursivamente
+            let mut buf = vec![0u8; self.block_size as usize];
+            self.read_block(block, &mut buf)?;
+
+            let ptrs_per_block = self.block_size / 4;
+            for i in 0..ptrs_per_block {
+                let ptr: u32 = unsafe {
+                    core::ptr::read_unaligned(buf.as_ptr().add(i as usize * 4) as *const u32)
+                };
+                if ptr != 0 {
+                    self.free_indirect_block(ptr, level - 1)?;
+                }
+            }
+        }
+
+        // Libera o próprio bloco
+        self.free_block(block)
+    }
+
     /// Retorna o inode root
     pub fn root(self: &Arc<Self>) -> Inode {
         Inode(Arc::new(Ext2Inode2 {
@@ -757,6 +933,8 @@ impl Ext2Inode2 {
             EXT2_S_IFLNK => InodeKind::Symlink,
             EXT2_S_IFCHR => InodeKind::CharDev,
             EXT2_S_IFBLK => InodeKind::BlockDev,
+            EXT2_S_IFIFO => InodeKind::Fifo,
+            EXT2_S_IFSOCK => InodeKind::Socket,
             _ => InodeKind::File,
         }
     }
@@ -768,6 +946,8 @@ impl Ext2Inode2 {
             EXT2_FT_SYMLINK => InodeKind::Symlink,
             EXT2_FT_CHRDEV => InodeKind::CharDev,
             EXT2_FT_BLKDEV => InodeKind::BlockDev,
+            EXT2_FT_FIFO => InodeKind::Fifo,
+            EXT2_FT_SOCK => InodeKind::Socket,
             _ => InodeKind::File,
         }
     }
@@ -796,16 +976,26 @@ impl InodeOps for Ext2Inode2 {
             i_osd2: [0; 12],
         });
 
-        Metadata {
-            uid: Uid(raw.i_uid as u32),
-            gid: Gid(raw.i_gid as u32),
-            mode: Mode::from_octal(raw.i_mode & 0o777),
-            kind: Self::inode_kind(raw.i_mode),
-        }
+        Metadata::simple(
+            Uid(raw.i_uid as u32),
+            Gid(raw.i_gid as u32),
+            Mode::from_octal(raw.i_mode & 0o777),
+            Self::inode_kind(raw.i_mode),
+        )
     }
 
-    fn set_metadata(&self, _meta: Metadata) {
-        // Read-only filesystem
+    fn set_metadata(&self, meta: Metadata) {
+        if let Ok(mut raw) = self.get_raw() {
+            // Preserva o tipo de arquivo (bits altos do mode)
+            let file_type = raw.i_mode & 0xF000;
+            raw.i_mode = file_type | meta.mode.to_octal();
+            raw.i_uid = meta.uid.0 as u16;
+            raw.i_gid = meta.gid.0 as u16;
+
+            // Escreve de volta ao disco
+            let _ = self.fs.write_inode(self.ino, &raw);
+            *self.raw.write() = Some(raw);
+        }
     }
 
     fn parent(&self) -> Option<Inode> {
@@ -881,6 +1071,8 @@ impl InodeOps for Ext2Inode2 {
             InodeKind::Symlink => (EXT2_S_IFLNK, EXT2_FT_SYMLINK),
             InodeKind::CharDev => (EXT2_S_IFCHR, EXT2_FT_CHRDEV),
             InodeKind::BlockDev => (EXT2_S_IFBLK, EXT2_FT_BLKDEV),
+            InodeKind::Fifo => (EXT2_S_IFIFO, EXT2_FT_FIFO),
+            InodeKind::Socket => (EXT2_S_IFSOCK, EXT2_FT_SOCK),
         };
 
         // Cria novo inode
@@ -970,7 +1162,8 @@ impl InodeOps for Ext2Inode2 {
     }
 
     fn readdir(&self) -> KResult<Vec<DirEntry>> {
-        let raw = self.get_raw()?;
+        // Read fresh from disk (not cache) to see latest entries
+        let raw = self.fs.read_inode(self.ino)?;
         if Self::inode_kind(raw.i_mode) != InodeKind::Dir {
             return Err(KError::Invalid);
         }
@@ -1076,6 +1269,76 @@ impl InodeOps for Ext2Inode2 {
     fn size(&self) -> KResult<usize> {
         let raw = self.get_raw()?;
         Ok(raw.i_size as usize)
+    }
+
+    fn unlink(&self, name: &str) -> KResult<()> {
+        let mut raw = self.get_raw()?;
+        if Self::inode_kind(raw.i_mode) != InodeKind::Dir {
+            return Err(KError::Invalid);
+        }
+
+        // Remove entrada do diretório e obtém o inode do arquivo
+        let child_ino = self.fs.remove_dir_entry(&mut raw, self.ino, name)?;
+
+        // Lê o inode do arquivo
+        let child_raw = self.fs.read_inode(child_ino)?;
+
+        // Verifica se é um arquivo (não diretório)
+        if Self::inode_kind(child_raw.i_mode) == InodeKind::Dir {
+            return Err(KError::Invalid);
+        }
+
+        // Decrementa link count
+        let new_links = child_raw.i_links_count.saturating_sub(1);
+        if new_links == 0 {
+            // Libera blocos de dados
+            self.fs.free_inode_blocks(&child_raw)?;
+            // Libera o inode
+            self.fs.free_inode(child_ino)?;
+        } else {
+            // Atualiza link count
+            let mut updated = child_raw;
+            updated.i_links_count = new_links;
+            self.fs.write_inode(child_ino, &updated)?;
+        }
+
+        // Atualiza cache
+        *self.raw.write() = Some(raw);
+
+        Ok(())
+    }
+
+    fn rmdir(&self, name: &str) -> KResult<()> {
+        let mut raw = self.get_raw()?;
+        if Self::inode_kind(raw.i_mode) != InodeKind::Dir {
+            return Err(KError::Invalid);
+        }
+
+        // Remove entrada do diretório e obtém o inode do subdiretório
+        let child_ino = self.fs.remove_dir_entry(&mut raw, self.ino, name)?;
+
+        // Lê o inode do diretório a ser removido
+        let child_raw = self.fs.read_inode(child_ino)?;
+
+        // Verifica se é um diretório
+        if Self::inode_kind(child_raw.i_mode) != InodeKind::Dir {
+            return Err(KError::Invalid);
+        }
+
+        // Libera blocos de dados (. e ..)
+        self.fs.free_inode_blocks(&child_raw)?;
+
+        // Libera o inode
+        self.fs.free_inode(child_ino)?;
+
+        // Decrementa link count do diretório pai (por causa do ..)
+        raw.i_links_count = raw.i_links_count.saturating_sub(1);
+        self.fs.write_inode(self.ino, &raw)?;
+
+        // Atualiza cache
+        *self.raw.write() = Some(raw);
+
+        Ok(())
     }
 }
 

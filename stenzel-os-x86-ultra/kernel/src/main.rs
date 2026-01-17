@@ -7,10 +7,14 @@
 
     mod arch;
     mod console;
+    mod crypto;
     mod drivers;
     mod fs;
+    mod gui;
+    mod ipc;
     mod mm;
     mod net;
+    mod pkg;
     mod process;
     mod security;
     mod serial;
@@ -21,10 +25,16 @@
     mod syscall;
     mod task;
     mod time;
+    mod unicode;
     mod userland;
+    mod users;
+    mod installer;
+    mod tests;
+    mod help;
+    mod compat;
     mod util;
 
-    use bootloader_api::config::{BootloaderConfig, Mapping};
+    use bootloader_api::config::{BootloaderConfig, FrameBuffer, Mapping};
     use bootloader_api::{entry_point, BootInfo};
 
     pub static BOOTLOADER_CONFIG: BootloaderConfig = {
@@ -35,6 +45,11 @@
         config.mappings.physical_memory = Some(Mapping::Dynamic);
         // Stack do kernel relativamente grande (ISR + stacks por thread ficam separados).
         config.kernel_stack_size = 256 * 1024;
+        // Request a framebuffer for GOP/UEFI graphics
+        let mut fb = FrameBuffer::new_default();
+        fb.minimum_framebuffer_width = Some(800);
+        fb.minimum_framebuffer_height = Some(600);
+        config.frame_buffer = fb;
         config
     };
 
@@ -44,12 +59,56 @@
         serial::init();
         util::banner();
 
+        // Initialize GOP/UEFI framebuffer if available
+        if let Some(framebuffer) = boot_info.framebuffer.take() {
+            util::kprintln!("boot: inicializando GOP framebuffer...");
+            drivers::framebuffer::init(framebuffer);
+            // Draw a test pattern to confirm it's working
+            drivers::framebuffer::draw_test_pattern();
+        } else {
+            util::kprintln!("boot: GOP framebuffer not available");
+        }
+
         util::kprintln!("boot: inicializando arch/x86_64...");
         arch::init();
 
         util::kprintln!("boot: inicializando memória...");
         mm::init(boot_info);
         mm::vma::init();
+        ipc::init();
+
+        // ACPI deve ser inicializado antes do APIC para que o MADT seja usado
+        util::kprintln!("boot: detectando ACPI...");
+        drivers::acpi::init();
+
+        // Tenta migrar para APIC (requer mm inicializado + ACPI para MADT)
+        arch::init_late();
+
+        // Inicializa HPET para timing de alta precisão
+        util::kprintln!("boot: inicializando HPET...");
+        if drivers::hpet::init() {
+            util::kprintln!("boot: HPET disponível");
+        } else {
+            util::kprintln!("boot: HPET não disponível, usando timers alternativos");
+        }
+
+        // Inicializa TSC (Time Stamp Counter)
+        util::kprintln!("boot: inicializando TSC...");
+        if arch::tsc::init() {
+            util::kprintln!("boot: TSC disponível");
+        } else {
+            util::kprintln!("boot: TSC não disponível");
+        }
+
+        // Parse DSDT/SSDT for ACPI device discovery
+        util::kprintln!("boot: parsing ACPI DSDT/SSDT...");
+        drivers::acpi::init_dsdt();
+
+        util::kprintln!("boot: inicializando PS/2 mouse...");
+        drivers::mouse::init();
+
+        util::kprintln!("boot: inicializando input event system...");
+        drivers::input::init();
 
         util::kprintln!("boot: inicializando segurança/usuários...");
         security::init();
@@ -70,6 +129,9 @@
         util::kprintln!("boot: inicializando USB (xHCI)...");
         drivers::usb::init();
 
+        util::kprintln!("boot: enumerando dispositivos USB...");
+        drivers::usb::xhci::enumerate_all_devices();
+
         util::kprintln!("boot: inicializando time/RTC...");
         time::init();
 
@@ -82,6 +144,12 @@
         // Inicializa o scheduler (apenas idle task por enquanto)
         util::kprintln!("boot: inicializando scheduler...");
         sched::init_scheduler_only();
+
+        // Test kernel thread before enabling interrupts
+        // (This spawns a kernel thread that will run once scheduler starts)
+        if let Err(e) = sched::spawn_kernel_thread("test-kthread", test_kernel_thread, 42) {
+            util::kprintln!("boot: WARN: failed to spawn test kernel thread: {:?}", e);
+        }
 
         util::kprintln!("boot: habilitando interrupções...");
         arch::enable_interrupts();
@@ -135,4 +203,13 @@
     fn alloc_error(layout: core::alloc::Layout) -> ! {
         util::kprintln!("ERRO: alocação falhou: {:?}", layout);
         arch::halt_loop();
+    }
+
+    /// Test kernel thread entry function
+    fn test_kernel_thread(arg: u64) -> ! {
+        util::kprintln!("kthread: test kernel thread running with arg={}", arg);
+        util::kprintln!("kthread: test kernel thread completing successfully");
+
+        // Exit the kernel thread with success
+        sched::kthread_exit(0);
     }

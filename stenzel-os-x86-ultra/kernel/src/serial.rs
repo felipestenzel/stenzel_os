@@ -107,6 +107,13 @@
         guard.as_mut().and_then(|s| s.read_byte())
     }
 
+    /// Verifica se há dados disponíveis para leitura SEM consumir.
+    /// Usado por poll/select.
+    pub fn has_data() -> bool {
+        let mut guard = SERIAL.lock();
+        guard.as_mut().map_or(false, |s| s.can_read())
+    }
+
     pub fn print(args: fmt::Arguments) {
         use core::fmt::Write;
         let mut guard = SERIAL.lock();

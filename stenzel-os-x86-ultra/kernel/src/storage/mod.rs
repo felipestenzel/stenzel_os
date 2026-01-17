@@ -12,6 +12,7 @@
 pub mod block;
 pub mod cache;
 pub mod gpt;
+pub mod mbr;
 pub mod ramdisk;
 
 pub use block::{BlockDevice, BlockDeviceId, PartitionBlockDevice};
@@ -114,8 +115,9 @@ pub fn init() {
         return;
     }
 
-    // Lê GPT e monta a primeira partição
+    // Lê GPT ou MBR e monta a primeira partição
     if let Some(dev) = ROOT_BLOCK.get() {
+        // Try GPT first
         if let Ok(parts) = gpt::read_gpt_partitions(&**dev) {
             crate::kprintln!("gpt: {} partições", parts.len());
             for (i, p) in parts.iter().enumerate() {
@@ -150,12 +152,101 @@ pub fn init() {
                     }
                 }
             }
+        } else if let Ok(parts) = mbr::read_mbr_with_logical(&**dev) {
+            // Try MBR if GPT not found
+            mbr::print_mbr_info(&parts);
+
+            // Mount first usable partition
+            if let Some(part0) = parts.iter().find(|p| !p.partition_type.is_extended()) {
+                let partition = PartitionBlockDevice::new(
+                    Arc::clone(dev),
+                    part0.first_lba as u64,
+                    part0.last_lba() as u64,
+                    BlockDeviceId(100),
+                );
+                let part_arc: Arc<dyn BlockDevice> = Arc::new(partition);
+                ROOT_PARTITION.call_once(|| Arc::clone(&part_arc));
+
+                // Try to mount based on partition type
+                if part0.partition_type.is_linux() {
+                    crate::kprintln!("ext2: tentando montar partição Linux...");
+                    match fs::mount_root_ext2(Arc::clone(&part_arc)) {
+                        Ok(()) => {
+                            crate::kprintln!("ext2: montado com sucesso!");
+                        }
+                        Err(e) => {
+                            crate::kprintln!("ext2: falha ao montar: {:?}", e);
+                        }
+                    }
+                } else if part0.partition_type.is_fat() {
+                    crate::kprintln!("fat32: tentando montar partição FAT...");
+                    match fs::fat32::Fat32Fs::mount(part_arc) {
+                        Ok(fat) => {
+                            crate::kprintln!("fat32: montado com sucesso!");
+                            // Mount FAT32 at /mnt
+                            let root_cred = crate::security::user_db().login("root").expect("root user");
+                            let mut vfs = fs::vfs_lock();
+                            let _ = vfs.mkdir_all("/mnt", &root_cred, fs::Mode::from_octal(0o755));
+                            vfs.mount("/mnt", fat.root());
+                        }
+                        Err(e) => {
+                            crate::kprintln!("fat32: falha ao montar: {:?}", e);
+                        }
+                    }
+                } else {
+                    crate::kprintln!("mbr: tipo de partição não suportado: {:?}", part0.partition_type);
+                }
+            }
         } else {
-            crate::kprintln!("gpt: não encontrado / inválido (ok para testes)");
+            crate::kprintln!("storage: nenhuma tabela de partição encontrada (GPT/MBR)");
         }
     }
 }
 
 pub fn root_block() -> &'static Arc<dyn BlockDevice> {
     ROOT_BLOCK.get().expect("storage: ROOT_BLOCK não inicializado")
+}
+
+/// Find a block device by path (e.g., "/dev/sda1")
+pub fn find_device_by_path(path: &str) -> Option<usize> {
+    // Simple path parsing - in a real implementation this would query devfs
+    // For now, we support:
+    // /dev/sda, /dev/sdb, etc. -> root block device
+    // /dev/sda1, /dev/sda2, etc. -> partitions
+
+    if !path.starts_with("/dev/") {
+        return None;
+    }
+
+    let name = &path[5..]; // Remove "/dev/"
+
+    // Check if it's the root block device
+    if name == "sda" || name == "vda" || name == "nvme0n1" {
+        if ROOT_BLOCK.get().is_some() {
+            return Some(0); // Root device ID
+        }
+    }
+
+    // Check for partition (e.g., sda1, vda1, nvme0n1p1)
+    if name.starts_with("sda") || name.starts_with("vda") || name.starts_with("nvme0n1p") {
+        if ROOT_PARTITION.get().is_some() {
+            return Some(100); // Partition device ID
+        }
+    }
+
+    None
+}
+
+/// Get a block device by ID
+pub fn get_device(device_id: usize) -> Option<Arc<dyn BlockDevice>> {
+    match device_id {
+        0 => ROOT_BLOCK.get().cloned(),
+        100 => ROOT_PARTITION.get().cloned(),
+        _ => None,
+    }
+}
+
+/// Get root partition if available
+pub fn root_partition() -> Option<&'static Arc<dyn BlockDevice>> {
+    ROOT_PARTITION.get()
 }

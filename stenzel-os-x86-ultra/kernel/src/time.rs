@@ -4,10 +4,24 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+extern crate alloc;
+
+use alloc::string::String;
+use core::sync::atomic::{AtomicU64, AtomicI32, Ordering};
+use crate::sync::IrqSafeMutex;
 
 /// Ticks desde o boot (incrementado pelo timer IRQ)
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Global timezone offset in minutes west of UTC
+/// Positive = west of UTC (behind), Negative = east of UTC (ahead)
+static TZ_MINUTESWEST: AtomicI32 = AtomicI32::new(0);
+
+/// Global timezone DST flag
+static TZ_DSTTIME: AtomicI32 = AtomicI32::new(0);
+
+/// Global timezone name
+static TZ_NAME: IrqSafeMutex<Option<String>> = IrqSafeMutex::new(None);
 
 /// Frequência do timer em Hz (100 = 10ms por tick)
 const TIMER_HZ: u64 = 100;
@@ -21,12 +35,24 @@ static BOOT_TIME_SECS: AtomicU64 = AtomicU64::new(1704067200); // 2024-01-01 00:
 
 /// Chamado pelo timer IRQ handler
 pub fn tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    let t = TICKS.fetch_add(1, Ordering::Relaxed);
+
+    // Poll USB HID devices every tick (10ms at 100Hz)
+    // This is called from interrupt context so we need to be quick
+    if t % 1 == 0 {
+        crate::drivers::usb::hid::poll_keyboards();
+        crate::drivers::usb::hid::poll_mice();
+    }
 }
 
 /// Retorna ticks desde o boot
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
+}
+
+/// Retorna a frequência do timer em Hz
+pub fn hz() -> u64 {
+    TIMER_HZ
 }
 
 /// Retorna tempo desde o boot em nanosegundos
@@ -125,10 +151,94 @@ pub fn gettimeofday() -> (Timeval, Timezone) {
         tv_usec: ts.tv_nsec / 1000,
     };
     let tz = Timezone {
-        tz_minuteswest: 0,
-        tz_dsttime: 0,
+        tz_minuteswest: TZ_MINUTESWEST.load(Ordering::Relaxed),
+        tz_dsttime: TZ_DSTTIME.load(Ordering::Relaxed),
     };
     (tv, tz)
+}
+
+/// Get current timezone
+pub fn get_timezone() -> Timezone {
+    Timezone {
+        tz_minuteswest: TZ_MINUTESWEST.load(Ordering::Relaxed),
+        tz_dsttime: TZ_DSTTIME.load(Ordering::Relaxed),
+    }
+}
+
+/// Set timezone
+pub fn set_timezone(tz: &Timezone) {
+    TZ_MINUTESWEST.store(tz.tz_minuteswest, Ordering::Relaxed);
+    TZ_DSTTIME.store(tz.tz_dsttime, Ordering::Relaxed);
+}
+
+/// Get timezone name
+pub fn get_timezone_name() -> String {
+    let guard = TZ_NAME.lock();
+    match &*guard {
+        Some(name) => name.clone(),
+        None => String::from("UTC"),
+    }
+}
+
+/// Set timezone by name (common timezone names)
+/// Returns true if timezone was recognized and set
+pub fn set_timezone_by_name(name: &str) -> bool {
+    // Common timezone offsets (minutes west of UTC)
+    let (tz_minuteswest, tz_dsttime) = match name {
+        "UTC" | "GMT" => (0, 0),
+        "EST" => (5 * 60, 0),          // Eastern Standard Time (UTC-5)
+        "EDT" => (4 * 60, 1),          // Eastern Daylight Time (UTC-4)
+        "CST" => (6 * 60, 0),          // Central Standard Time (UTC-6)
+        "CDT" => (5 * 60, 1),          // Central Daylight Time (UTC-5)
+        "MST" => (7 * 60, 0),          // Mountain Standard Time (UTC-7)
+        "MDT" => (6 * 60, 1),          // Mountain Daylight Time (UTC-6)
+        "PST" => (8 * 60, 0),          // Pacific Standard Time (UTC-8)
+        "PDT" => (7 * 60, 1),          // Pacific Daylight Time (UTC-7)
+        "WET" => (0, 0),               // Western European Time (UTC)
+        "CET" => (-1 * 60, 0),         // Central European Time (UTC+1)
+        "CEST" => (-2 * 60, 1),        // Central European Summer Time (UTC+2)
+        "EET" => (-2 * 60, 0),         // Eastern European Time (UTC+2)
+        "EEST" => (-3 * 60, 1),        // Eastern European Summer Time (UTC+3)
+        "BRT" => (3 * 60, 0),          // Brasília Time (UTC-3)
+        "BRST" => (2 * 60, 1),         // Brasília Summer Time (UTC-2)
+        "JST" => (-9 * 60, 0),         // Japan Standard Time (UTC+9)
+        "CST-China" | "CST8" => (-8 * 60, 0), // China Standard Time (UTC+8)
+        "AEST" => (-10 * 60, 0),       // Australian Eastern Standard Time (UTC+10)
+        "AEDT" => (-11 * 60, 1),       // Australian Eastern Daylight Time (UTC+11)
+        "IST" => (-5 * 60 - 30, 0),    // India Standard Time (UTC+5:30)
+        _ => return false,             // Unknown timezone
+    };
+
+    TZ_MINUTESWEST.store(tz_minuteswest, Ordering::Relaxed);
+    TZ_DSTTIME.store(tz_dsttime, Ordering::Relaxed);
+
+    // Store the timezone name
+    let mut guard = TZ_NAME.lock();
+    *guard = Some(String::from(name));
+
+    true
+}
+
+/// Convert UTC timestamp to local time (considering timezone)
+pub fn utc_to_local(utc_secs: i64) -> i64 {
+    let offset_minutes = TZ_MINUTESWEST.load(Ordering::Relaxed);
+    // tz_minuteswest is positive for west of UTC (behind), so we subtract
+    utc_secs - (offset_minutes as i64 * 60)
+}
+
+/// Convert local time to UTC (considering timezone)
+pub fn local_to_utc(local_secs: i64) -> i64 {
+    let offset_minutes = TZ_MINUTESWEST.load(Ordering::Relaxed);
+    local_secs + (offset_minutes as i64 * 60)
+}
+
+/// Get local time as Timespec
+pub fn localtime() -> Timespec {
+    let ts = realtime();
+    Timespec {
+        tv_sec: utc_to_local(ts.tv_sec),
+        tv_nsec: ts.tv_nsec,
+    }
 }
 
 /// nanosleep - dorme por um período

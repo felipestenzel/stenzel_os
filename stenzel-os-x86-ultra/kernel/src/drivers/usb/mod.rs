@@ -1,12 +1,28 @@
 //! USB subsystem.
 //!
-//! Suporta xHCI (USB 3.x) para hardware moderno.
+//! Suporta:
+//! - EHCI (USB 2.0) para hardware com controladores EHCI
+//! - xHCI (USB 3.x) para hardware moderno
+//! - Unified device enumeration and management
 //!
 //! NOTA: Este módulo está preparado para features futuras.
 
 #![allow(dead_code)]
 
+pub mod devices;
+pub mod ehci;
+pub mod hid;
+pub mod hub;
+pub mod storage;
 pub mod xhci;
+
+// Re-export device management
+pub use devices::{
+    UsbDeviceManager, UsbDeviceInfo, UsbDeviceId, UsbDeviceState,
+    UsbInterface, UsbConfiguration, ControllerType, UsbEvent, UsbStats,
+    list_devices, find_by_class, find_by_ids, find_by_interface_class,
+    format_all_devices, format_stats, device_count,
+};
 
 
 /// Velocidade USB
@@ -276,5 +292,14 @@ pub mod mass_storage {
 /// Inicializa o subsistema USB
 pub fn init() {
     crate::kprintln!("usb: inicializando...");
+    // Initialize device manager first
+    devices::init();
+    // Initialize EHCI first (USB 2.0)
+    ehci::init();
+    // Then xHCI (USB 3.x)
     xhci::init();
+    // Initialize device drivers
+    hid::init();
+    hub::init();
+    storage::init();
 }

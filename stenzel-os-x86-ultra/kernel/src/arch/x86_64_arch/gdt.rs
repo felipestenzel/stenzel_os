@@ -17,6 +17,7 @@ use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const NMI_IST_INDEX: u16 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Selectors {
@@ -50,6 +51,8 @@ static SELECTORS: Once<Selectors> = Once::new();
 
 // Stack IST dedicado para double fault (precisa ser static para lifetime)
 static mut DF_STACK: [u8; 4096 * 5] = [0; 4096 * 5];
+// Stack IST dedicado para NMI (precisa ser static para lifetime)
+static mut NMI_STACK: [u8; 4096 * 5] = [0; 4096 * 5];
 
 pub fn init() {
     unsafe {
@@ -57,8 +60,12 @@ pub fn init() {
         let df_stack_ptr = addr_of_mut!(DF_STACK);
         let df_stack_top = VirtAddr::from_ptr((df_stack_ptr as *const u8).add(4096 * 5));
 
+        let nmi_stack_ptr = addr_of_mut!(NMI_STACK);
+        let nmi_stack_top = VirtAddr::from_ptr((nmi_stack_ptr as *const u8).add(4096 * 5));
+
         let tss = TSS.get_mut();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = df_stack_top;
+        tss.interrupt_stack_table[NMI_IST_INDEX as usize] = nmi_stack_top;
         // RSP0 será configurado pelo scheduler conforme o processo em execução.
         tss.privilege_stack_table[0] = VirtAddr::new(0);
 

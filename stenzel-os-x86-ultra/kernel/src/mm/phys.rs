@@ -254,3 +254,200 @@
         let (w, m) = word_bit(i);
         bits[w] &= !m;
     }
+
+    // ============================================================
+    // Huge Pages Support (2MB and 1GB pages)
+    // ============================================================
+
+    use x86_64::structures::paging::{Size2MiB, Size1GiB};
+
+    /// Number of 4KB frames in a 2MB huge page
+    pub const FRAMES_PER_2MB: usize = 512;
+    /// Number of 4KB frames in a 1GB huge page
+    pub const FRAMES_PER_1GB: usize = 262144;
+
+    impl BitmapFrameAllocator {
+        /// Allocate a 2MB-aligned region (512 contiguous 4KB frames).
+        /// Returns the first PhysFrame if successful.
+        pub fn allocate_huge_2mb(&mut self) -> Option<PhysFrame<Size2MiB>> {
+            // Find a 2MB-aligned region
+            let align_frames = FRAMES_PER_2MB; // 512 frames = 2MB
+            let total = self.total_frames;
+
+            // Start from an aligned position
+            let mut start = 0usize;
+            while start + align_frames <= total {
+                // Check if start is 2MB-aligned (frame index divisible by 512)
+                if start % align_frames != 0 {
+                    start = ((start / align_frames) + 1) * align_frames;
+                    continue;
+                }
+
+                // Check if all frames in this range are free
+                let mut all_free = true;
+                for j in 0..align_frames {
+                    if get_bit(&self.bits, start + j) {
+                        all_free = false;
+                        start = ((start / align_frames) + 1) * align_frames;
+                        break;
+                    }
+                }
+
+                if all_free {
+                    // Mark all frames as used
+                    for j in 0..align_frames {
+                        set_bit(&mut self.bits, start + j);
+                    }
+                    self.free_frames = self.free_frames.saturating_sub(align_frames);
+                    let pa = PhysAddr::new((start as u64) * 4096);
+                    return Some(PhysFrame::containing_address(pa));
+                }
+            }
+            None
+        }
+
+        /// Allocate a 1GB-aligned region (262144 contiguous 4KB frames).
+        /// Returns the first PhysFrame if successful.
+        pub fn allocate_huge_1gb(&mut self) -> Option<PhysFrame<Size1GiB>> {
+            // Find a 1GB-aligned region
+            let align_frames = FRAMES_PER_1GB; // 262144 frames = 1GB
+            let total = self.total_frames;
+
+            // Start from an aligned position
+            let mut start = 0usize;
+            while start + align_frames <= total {
+                // Check if start is 1GB-aligned (frame index divisible by 262144)
+                if start % align_frames != 0 {
+                    start = ((start / align_frames) + 1) * align_frames;
+                    continue;
+                }
+
+                // Check if all frames in this range are free
+                let mut all_free = true;
+                for j in 0..align_frames {
+                    if get_bit(&self.bits, start + j) {
+                        all_free = false;
+                        start = ((start / align_frames) + 1) * align_frames;
+                        break;
+                    }
+                }
+
+                if all_free {
+                    // Mark all frames as used
+                    for j in 0..align_frames {
+                        set_bit(&mut self.bits, start + j);
+                    }
+                    self.free_frames = self.free_frames.saturating_sub(align_frames);
+                    let pa = PhysAddr::new((start as u64) * 4096);
+                    return Some(PhysFrame::containing_address(pa));
+                }
+            }
+            None
+        }
+
+        /// Deallocate a 2MB huge page (512 contiguous 4KB frames).
+        pub fn deallocate_huge_2mb(&mut self, frame: PhysFrame<Size2MiB>) {
+            let base_idx = (frame.start_address().as_u64() / 4096) as usize;
+            if base_idx + FRAMES_PER_2MB > self.total_frames {
+                return;
+            }
+            // Verify alignment
+            if base_idx % FRAMES_PER_2MB != 0 {
+                return;
+            }
+            for j in 0..FRAMES_PER_2MB {
+                if get_bit(&self.bits, base_idx + j) {
+                    clear_bit(&mut self.bits, base_idx + j);
+                    self.free_frames += 1;
+                }
+            }
+        }
+
+        /// Deallocate a 1GB huge page (262144 contiguous 4KB frames).
+        pub fn deallocate_huge_1gb(&mut self, frame: PhysFrame<Size1GiB>) {
+            let base_idx = (frame.start_address().as_u64() / 4096) as usize;
+            if base_idx + FRAMES_PER_1GB > self.total_frames {
+                return;
+            }
+            // Verify alignment
+            if base_idx % FRAMES_PER_1GB != 0 {
+                return;
+            }
+            for j in 0..FRAMES_PER_1GB {
+                if get_bit(&self.bits, base_idx + j) {
+                    clear_bit(&mut self.bits, base_idx + j);
+                    self.free_frames += 1;
+                }
+            }
+        }
+
+        /// Count available 2MB huge pages.
+        pub fn count_huge_2mb_available(&self) -> usize {
+            let align_frames = FRAMES_PER_2MB;
+            let total = self.total_frames;
+            let mut count = 0;
+
+            let mut start = 0usize;
+            while start + align_frames <= total {
+                if start % align_frames != 0 {
+                    start = ((start / align_frames) + 1) * align_frames;
+                    continue;
+                }
+
+                let mut all_free = true;
+                for j in 0..align_frames {
+                    if get_bit(&self.bits, start + j) {
+                        all_free = false;
+                        break;
+                    }
+                }
+
+                if all_free {
+                    count += 1;
+                }
+                start += align_frames;
+            }
+            count
+        }
+
+        /// Count available 1GB huge pages.
+        pub fn count_huge_1gb_available(&self) -> usize {
+            let align_frames = FRAMES_PER_1GB;
+            let total = self.total_frames;
+            let mut count = 0;
+
+            let mut start = 0usize;
+            while start + align_frames <= total {
+                if start % align_frames != 0 {
+                    start = ((start / align_frames) + 1) * align_frames;
+                    continue;
+                }
+
+                let mut all_free = true;
+                for j in 0..align_frames {
+                    if get_bit(&self.bits, start + j) {
+                        all_free = false;
+                        break;
+                    }
+                }
+
+                if all_free {
+                    count += 1;
+                }
+                start += align_frames;
+            }
+            count
+        }
+    }
+
+    unsafe impl FrameAllocator<Size2MiB> for BitmapFrameAllocator {
+        fn allocate_frame(&mut self) -> Option<PhysFrame<Size2MiB>> {
+            self.allocate_huge_2mb()
+        }
+    }
+
+    unsafe impl FrameAllocator<Size1GiB> for BitmapFrameAllocator {
+        fn allocate_frame(&mut self) -> Option<PhysFrame<Size1GiB>> {
+            self.allocate_huge_1gb()
+        }
+    }

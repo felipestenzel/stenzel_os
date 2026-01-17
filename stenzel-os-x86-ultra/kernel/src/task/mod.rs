@@ -216,7 +216,12 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
     pub fn yield_now() {
         // Se o scheduler não foi inicializado, apenas espera uma interrupção
         if SCHED.get().is_none() {
-            x86_64::instructions::hlt();
+            // Enable interrupts before HLT (they might be disabled by syscall entry)
+            // After HLT wakes up (from timer), disable again for syscall consistency
+            unsafe {
+                x86_64::instructions::interrupts::enable_and_hlt();
+                x86_64::instructions::interrupts::disable();
+            }
             return;
         }
 

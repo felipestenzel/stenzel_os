@@ -60,6 +60,25 @@ pub mod sig {
     pub const SIGRTMAX: u32 = 64;
 }
 
+/// si_code values for SIGSEGV
+pub mod segv_code {
+    pub const SEGV_MAPERR: i32 = 1; // Address not mapped
+    pub const SEGV_ACCERR: i32 = 2; // Invalid permissions
+}
+
+/// si_code values for SIGBUS
+pub mod bus_code {
+    pub const BUS_ADRALN: i32 = 1; // Invalid address alignment
+    pub const BUS_ADRERR: i32 = 2; // Non-existent physical address
+    pub const BUS_OBJERR: i32 = 3; // Object-specific hardware error
+}
+
+/// si_code values for general signals
+pub mod si_code {
+    pub const SI_USER: i32 = 0;    // Sent by kill, sigsend, raise
+    pub const SI_KERNEL: i32 = 128; // Sent by kernel
+}
+
 /// Flags para sigaction
 pub mod sa_flags {
     pub const SA_NOCLDSTOP: u64 = 1;        // Não recebe SIGCHLD quando filho para
@@ -142,6 +161,22 @@ impl Siginfo {
             si_status: 0,
             _pad2: 0,
             si_addr: 0,
+            _reserved: [0; 12],
+        }
+    }
+
+    /// Creates a Siginfo for a memory fault (SIGSEGV/SIGBUS) with the fault address.
+    pub fn fault(signo: i32, code: i32, addr: u64) -> Self {
+        Self {
+            si_signo: signo,
+            si_errno: 0,
+            si_code: code,
+            _pad: 0,
+            si_pid: 0,
+            si_uid: 0,
+            si_status: 0,
+            _pad2: 0,
+            si_addr: addr,
             _reserved: [0; 12],
         }
     }
@@ -550,6 +585,64 @@ pub fn setup_signal_frame(
     Some((new_sp, action.sa_handler))
 }
 
+/// Prepara a stack do usuário para executar um signal handler with custom siginfo.
+///
+/// This variant allows passing a pre-filled Siginfo (useful for fault signals like SIGSEGV).
+pub fn setup_signal_frame_with_info(
+    user_sp: u64,
+    _signum: u32,
+    action: &Sigaction,
+    siginfo: Siginfo,
+    saved_rip: u64,
+    saved_rsp: u64,
+    saved_rflags: u64,
+    regs: &[u64; 16],
+    old_mask: u64,
+) -> Option<(u64, u64)> {
+    use core::mem::size_of;
+
+    let frame_size = size_of::<SignalFrame>();
+    let new_sp = (user_sp - frame_size as u64) & !0xF;
+
+    if new_sp < 0x1000 {
+        return None;
+    }
+
+    unsafe {
+        let frame_ptr = new_sp as *mut SignalFrame;
+
+        (*frame_ptr).restorer = action.sa_restorer;
+        (*frame_ptr).info = siginfo;  // Use the provided siginfo
+
+        (*frame_ptr).uc.uc_flags = 0;
+        (*frame_ptr).uc.uc_link = 0;
+        (*frame_ptr).uc.uc_stack = StackT::empty();
+        (*frame_ptr).uc.uc_sigmask = old_mask;
+
+        let mc = &mut (*frame_ptr).uc.uc_mcontext;
+        mc.r15 = regs[0];
+        mc.r14 = regs[1];
+        mc.r13 = regs[2];
+        mc.r12 = regs[3];
+        mc.r11 = regs[4];
+        mc.r10 = regs[5];
+        mc.r9 = regs[6];
+        mc.r8 = regs[7];
+        mc.rbp = regs[8];
+        mc.rdi = regs[9];
+        mc.rsi = regs[10];
+        mc.rdx = regs[11];
+        mc.rcx = regs[12];
+        mc.rbx = regs[13];
+        mc.rax = regs[14];
+        mc.rsp = saved_rsp;
+        mc.rip = saved_rip;
+        mc.rflags = saved_rflags;
+    }
+
+    Some((new_sp, action.sa_handler))
+}
+
 /// Restaura o contexto após retorno de um signal handler (sigreturn).
 ///
 /// Lê o SignalFrame da stack do usuário e restaura os registradores.
@@ -575,4 +668,316 @@ pub fn restore_signal_frame(
 
         Some((mc.rip, mc.rsp, mc.rflags, regs, frame.uc.uc_sigmask))
     }
+}
+
+// ============================================================================
+// signalfd - File descriptor for signals
+// ============================================================================
+
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use spin::Mutex;
+
+/// signalfd flags
+pub mod sfd_flags {
+    /// Non-blocking mode
+    pub const SFD_NONBLOCK: u32 = 0x00800;
+    /// Close-on-exec
+    pub const SFD_CLOEXEC: u32 = 0x80000;
+}
+
+/// Structure returned when reading from signalfd
+/// This is signalfd_siginfo from Linux
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SignalfdSiginfo {
+    /// Signal number
+    pub ssi_signo: u32,
+    /// Error number (unused for now)
+    pub ssi_errno: i32,
+    /// Signal code
+    pub ssi_code: i32,
+    /// PID of sender
+    pub ssi_pid: u32,
+    /// UID of sender
+    pub ssi_uid: u32,
+    /// File descriptor (for SIGIO)
+    pub ssi_fd: i32,
+    /// Kernel timer ID (for POSIX timers)
+    pub ssi_tid: u32,
+    /// Band event (for SIGIO)
+    pub ssi_band: u32,
+    /// Timer overrun count
+    pub ssi_overrun: u32,
+    /// Trap number
+    pub ssi_trapno: u32,
+    /// Exit status or signal (for SIGCHLD)
+    pub ssi_status: i32,
+    /// Integer sent by sigqueue
+    pub ssi_int: i32,
+    /// Pointer sent by sigqueue
+    pub ssi_ptr: u64,
+    /// User CPU time consumed (for SIGCHLD)
+    pub ssi_utime: u64,
+    /// System CPU time consumed (for SIGCHLD)
+    pub ssi_stime: u64,
+    /// Address that generated signal (for SIGSEGV, SIGBUS, etc.)
+    pub ssi_addr: u64,
+    /// Least significant bit of address (for SIGSEGV, SIGBUS)
+    pub ssi_addr_lsb: u16,
+    /// Padding
+    _pad2: u16,
+    /// System call number (for SIGSYS)
+    pub ssi_syscall: i32,
+    /// System call address (for SIGSYS)
+    pub ssi_call_addr: u64,
+    /// System call architecture (for SIGSYS)
+    pub ssi_arch: u32,
+    /// Padding to 128 bytes
+    _pad: [u8; 28],
+}
+
+impl SignalfdSiginfo {
+    /// Size of the structure (128 bytes)
+    pub const SIZE: usize = 128;
+
+    /// Create from Siginfo
+    pub fn from_siginfo(info: &Siginfo) -> Self {
+        Self {
+            ssi_signo: info.si_signo as u32,
+            ssi_errno: info.si_errno,
+            ssi_code: info.si_code,
+            ssi_pid: info.si_pid as u32,
+            ssi_uid: info.si_uid as u32,
+            ssi_fd: -1,
+            ssi_tid: 0,
+            ssi_band: 0,
+            ssi_overrun: 0,
+            ssi_trapno: 0,
+            ssi_status: info.si_status,
+            ssi_int: 0,
+            ssi_ptr: 0,
+            ssi_utime: 0,
+            ssi_stime: 0,
+            ssi_addr: info.si_addr,
+            ssi_addr_lsb: 0,
+            _pad2: 0,
+            ssi_syscall: 0,
+            ssi_call_addr: 0,
+            ssi_arch: 0,
+            _pad: [0; 28],
+        }
+    }
+
+    /// Convert to bytes for reading
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut bytes = [0u8; Self::SIZE];
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self as *const Self as *const u8,
+                bytes.as_mut_ptr(),
+                Self::SIZE,
+            );
+        }
+        bytes
+    }
+}
+
+/// A signalfd instance
+pub struct SignalFd {
+    /// Signal mask (which signals to accept)
+    mask: AtomicU64,
+    /// Flags (SFD_NONBLOCK, SFD_CLOEXEC)
+    flags: u32,
+    /// Queued signals
+    queue: Mutex<VecDeque<SignalfdSiginfo>>,
+    /// Maximum queue size
+    max_queue: usize,
+}
+
+impl SignalFd {
+    /// Create a new signalfd
+    ///
+    /// # Arguments
+    /// * `mask` - Signal mask (which signals to accept)
+    /// * `flags` - Flags (SFD_NONBLOCK, SFD_CLOEXEC)
+    pub fn new(mask: u64, flags: u32) -> Self {
+        Self {
+            mask: AtomicU64::new(mask),
+            flags,
+            queue: Mutex::new(VecDeque::with_capacity(32)),
+            max_queue: 256,
+        }
+    }
+
+    /// Update the signal mask
+    pub fn set_mask(&self, mask: u64) {
+        self.mask.store(mask, Ordering::SeqCst);
+    }
+
+    /// Get the current signal mask
+    pub fn get_mask(&self) -> u64 {
+        self.mask.load(Ordering::SeqCst)
+    }
+
+    /// Check if a signal is in the mask
+    pub fn accepts_signal(&self, signum: u32) -> bool {
+        if signum == 0 || signum >= 64 {
+            return false;
+        }
+        let mask = self.mask.load(Ordering::SeqCst);
+        (mask & (1u64 << signum)) != 0
+    }
+
+    /// Queue a signal for reading
+    ///
+    /// Returns true if the signal was queued, false if queue is full
+    pub fn queue_signal(&self, info: &Siginfo) -> bool {
+        let signum = info.si_signo as u32;
+        if !self.accepts_signal(signum) {
+            return false;
+        }
+
+        let mut queue = self.queue.lock();
+        if queue.len() >= self.max_queue {
+            return false;
+        }
+
+        queue.push_back(SignalfdSiginfo::from_siginfo(info));
+        true
+    }
+
+    /// Read signals from the fd
+    ///
+    /// Returns the number of signals read, or error
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, SignalFdError> {
+        if buf.len() < SignalfdSiginfo::SIZE {
+            return Err(SignalFdError::InvalidSize);
+        }
+
+        let mut queue = self.queue.lock();
+
+        if queue.is_empty() {
+            if (self.flags & sfd_flags::SFD_NONBLOCK) != 0 {
+                return Err(SignalFdError::WouldBlock);
+            }
+            // Would block - in a real implementation we'd wait here
+            return Err(SignalFdError::WouldBlock);
+        }
+
+        let mut bytes_read = 0;
+        let max_signals = buf.len() / SignalfdSiginfo::SIZE;
+
+        for _ in 0..max_signals {
+            if let Some(info) = queue.pop_front() {
+                let bytes = info.to_bytes();
+                buf[bytes_read..bytes_read + SignalfdSiginfo::SIZE].copy_from_slice(&bytes);
+                bytes_read += SignalfdSiginfo::SIZE;
+            } else {
+                break;
+            }
+        }
+
+        if bytes_read == 0 {
+            Err(SignalFdError::WouldBlock)
+        } else {
+            Ok(bytes_read)
+        }
+    }
+
+    /// Check if there are signals ready to read
+    pub fn is_readable(&self) -> bool {
+        !self.queue.lock().is_empty()
+    }
+
+    /// Get the number of queued signals
+    pub fn queued_count(&self) -> usize {
+        self.queue.lock().len()
+    }
+
+    /// Check if non-blocking mode is enabled
+    pub fn is_nonblock(&self) -> bool {
+        (self.flags & sfd_flags::SFD_NONBLOCK) != 0
+    }
+
+    /// Check if close-on-exec is enabled
+    pub fn is_cloexec(&self) -> bool {
+        (self.flags & sfd_flags::SFD_CLOEXEC) != 0
+    }
+}
+
+/// SignalFd errors
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalFdError {
+    /// Would block (non-blocking mode, no signals available)
+    WouldBlock,
+    /// Buffer too small
+    InvalidSize,
+    /// Invalid signal mask
+    InvalidMask,
+}
+
+/// Global registry of signalfd instances (for delivering signals)
+static SIGNALFD_REGISTRY: spin::Once<Mutex<Vec<Arc<SignalFd>>>> = spin::Once::new();
+
+fn signalfd_registry() -> &'static Mutex<Vec<Arc<SignalFd>>> {
+    SIGNALFD_REGISTRY.call_once(|| Mutex::new(Vec::new()))
+}
+
+/// Register a signalfd for signal delivery
+pub fn register_signalfd(sfd: Arc<SignalFd>) {
+    signalfd_registry().lock().push(sfd);
+}
+
+/// Unregister a signalfd
+pub fn unregister_signalfd(sfd: &Arc<SignalFd>) {
+    let mut registry = signalfd_registry().lock();
+    registry.retain(|s| !Arc::ptr_eq(s, sfd));
+}
+
+/// Deliver a signal to all matching signalfds
+///
+/// Returns true if at least one signalfd accepted the signal
+pub fn deliver_to_signalfds(info: &Siginfo) -> bool {
+    let registry = signalfd_registry().lock();
+    let mut delivered = false;
+
+    for sfd in registry.iter() {
+        if sfd.queue_signal(info) {
+            delivered = true;
+        }
+    }
+
+    delivered
+}
+
+/// Create a new signalfd
+///
+/// This is the implementation of the signalfd() syscall
+pub fn sys_signalfd(fd: i32, mask: u64, flags: u32) -> Result<Arc<SignalFd>, SignalFdError> {
+    // Validate flags
+    let valid_flags = sfd_flags::SFD_NONBLOCK | sfd_flags::SFD_CLOEXEC;
+    if (flags & !valid_flags) != 0 {
+        return Err(SignalFdError::InvalidMask);
+    }
+
+    if fd == -1 {
+        // Create new signalfd
+        let sfd = Arc::new(SignalFd::new(mask, flags));
+        register_signalfd(Arc::clone(&sfd));
+        Ok(sfd)
+    } else {
+        // Update existing signalfd - would need to lookup by fd
+        // For now, just create a new one
+        let sfd = Arc::new(SignalFd::new(mask, flags));
+        register_signalfd(Arc::clone(&sfd));
+        Ok(sfd)
+    }
+}
+
+/// Initialize signalfd subsystem
+pub fn init_signalfd() {
+    SIGNALFD_REGISTRY.call_once(|| Mutex::new(Vec::new()));
+    crate::kprintln!("signalfd: subsystem initialized");
 }

@@ -47,6 +47,10 @@
         OutOfRange,
         Timeout,
         NoChild,
+        NotEmpty,
+        BrokenPipe,
+        NotADirectory,
+        IsADirectory,
     }
 
     pub type KResult<T> = core::result::Result<T, KError>;

@@ -92,6 +92,327 @@ pub struct TcpConnKey {
     pub remote_port: u16,
 }
 
+// ============================================================================
+// TCP Congestion Control
+// ============================================================================
+
+/// Approximate cube root using Newton's method (for no_std)
+fn cbrt_approx(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+
+    // Initial guess using bit manipulation
+    let mut guess = x / 3.0;
+    if guess == 0.0 {
+        guess = 0.1;
+    }
+
+    // Newton's method iterations: guess = (2*guess + x/(guess*guess)) / 3
+    for _ in 0..10 {
+        guess = (2.0 * guess + x / (guess * guess)) / 3.0;
+    }
+
+    guess
+}
+
+/// TCP Congestion Control Algorithm
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CongestionAlgorithm {
+    /// TCP Reno (default) - AIMD with fast retransmit/recovery
+    Reno,
+    /// TCP NewReno - improved fast recovery
+    NewReno,
+    /// TCP Cubic - Linux default, better for high-bandwidth
+    Cubic,
+}
+
+/// Congestion control state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CongestionState {
+    /// Initial slow start phase
+    SlowStart,
+    /// Congestion avoidance phase
+    CongestionAvoidance,
+    /// Fast recovery phase
+    FastRecovery,
+}
+
+/// TCP Congestion Control state
+#[derive(Debug, Clone)]
+pub struct CongestionControl {
+    /// Current congestion control algorithm
+    pub algorithm: CongestionAlgorithm,
+    /// Current state
+    pub state: CongestionState,
+    /// Congestion window (in bytes)
+    pub cwnd: u32,
+    /// Slow start threshold
+    pub ssthresh: u32,
+    /// Maximum segment size
+    pub mss: u16,
+    /// Receiver's advertised window
+    pub rwnd: u32,
+    /// Number of duplicate ACKs received
+    pub dup_ack_count: u8,
+    /// Smoothed RTT (in microseconds)
+    pub srtt: u32,
+    /// RTT variation
+    pub rttvar: u32,
+    /// Retransmission timeout (in microseconds)
+    pub rto: u32,
+    /// Last time a segment was sent (for RTT calculation)
+    pub last_sent_time: u64,
+    /// Sequence number of timed segment
+    pub rtt_seq: u32,
+    /// Whether we're measuring RTT for a segment
+    pub rtt_measuring: bool,
+    /// Bytes acknowledged since cwnd last increased
+    pub bytes_acked: u32,
+    /// Recovery point for NewReno
+    pub recovery_point: u32,
+    /// For CUBIC: last congestion time
+    pub cubic_last_congestion: u64,
+    /// For CUBIC: W_max at last congestion
+    pub cubic_w_max: u32,
+    /// For CUBIC: K value
+    pub cubic_k: f32,
+}
+
+impl Default for CongestionControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CongestionControl {
+    /// Initial congestion window (RFC 6928: 10*MSS)
+    const INITIAL_CWND_SEGMENTS: u32 = 10;
+    /// Initial ssthresh (large value)
+    const INITIAL_SSTHRESH: u32 = 65535;
+    /// Default MSS
+    const DEFAULT_MSS: u16 = 1460;
+    /// Minimum RTO (1 second)
+    const MIN_RTO: u32 = 1_000_000;
+    /// Maximum RTO (60 seconds)
+    const MAX_RTO: u32 = 60_000_000;
+    /// Initial RTO (3 seconds, RFC 6298)
+    const INITIAL_RTO: u32 = 3_000_000;
+    /// CUBIC beta
+    const CUBIC_BETA: f32 = 0.7;
+    /// CUBIC C constant
+    const CUBIC_C: f32 = 0.4;
+
+    pub fn new() -> Self {
+        let mss = Self::DEFAULT_MSS;
+        Self {
+            algorithm: CongestionAlgorithm::Reno,
+            state: CongestionState::SlowStart,
+            cwnd: Self::INITIAL_CWND_SEGMENTS * mss as u32,
+            ssthresh: Self::INITIAL_SSTHRESH,
+            mss,
+            rwnd: 65535,
+            dup_ack_count: 0,
+            srtt: 0,
+            rttvar: 0,
+            rto: Self::INITIAL_RTO,
+            last_sent_time: 0,
+            rtt_seq: 0,
+            rtt_measuring: false,
+            bytes_acked: 0,
+            recovery_point: 0,
+            cubic_last_congestion: 0,
+            cubic_w_max: 0,
+            cubic_k: 0.0,
+        }
+    }
+
+    /// Set the congestion control algorithm
+    pub fn set_algorithm(&mut self, algo: CongestionAlgorithm) {
+        self.algorithm = algo;
+    }
+
+    /// Get the effective window size (min of cwnd and rwnd)
+    pub fn effective_window(&self) -> u32 {
+        self.cwnd.min(self.rwnd)
+    }
+
+    /// Get flight size (bytes in flight)
+    pub fn flight_size(&self, snd_una: u32, snd_nxt: u32) -> u32 {
+        snd_nxt.wrapping_sub(snd_una)
+    }
+
+    /// Check if we can send more data
+    pub fn can_send(&self, snd_una: u32, snd_nxt: u32) -> bool {
+        self.flight_size(snd_una, snd_nxt) < self.effective_window()
+    }
+
+    /// Update RTT estimate (RFC 6298)
+    pub fn update_rtt(&mut self, measured_rtt: u32) {
+        if self.srtt == 0 {
+            // First measurement
+            self.srtt = measured_rtt;
+            self.rttvar = measured_rtt / 2;
+        } else {
+            // Subsequent measurements
+            let alpha = 8; // 1/8 as shift
+            let beta = 4;  // 1/4 as shift
+
+            let diff = if measured_rtt > self.srtt {
+                measured_rtt - self.srtt
+            } else {
+                self.srtt - measured_rtt
+            };
+
+            self.rttvar = (3 * self.rttvar + diff) / 4;
+            self.srtt = (7 * self.srtt + measured_rtt) / 8;
+        }
+
+        // Calculate RTO
+        self.rto = self.srtt + 4 * self.rttvar;
+        self.rto = self.rto.max(Self::MIN_RTO).min(Self::MAX_RTO);
+    }
+
+    /// Handle new ACK received
+    pub fn on_ack(&mut self, bytes_acked: u32, current_time: u64) {
+        self.dup_ack_count = 0;
+
+        match self.state {
+            CongestionState::SlowStart => {
+                // Increase cwnd exponentially
+                self.cwnd += bytes_acked.min(self.mss as u32);
+
+                // Check if we should transition to congestion avoidance
+                if self.cwnd >= self.ssthresh {
+                    self.state = CongestionState::CongestionAvoidance;
+                }
+            }
+            CongestionState::CongestionAvoidance => {
+                match self.algorithm {
+                    CongestionAlgorithm::Reno | CongestionAlgorithm::NewReno => {
+                        // AIMD: increase cwnd by ~MSS per RTT
+                        self.bytes_acked += bytes_acked;
+                        if self.bytes_acked >= self.cwnd {
+                            self.cwnd += self.mss as u32;
+                            self.bytes_acked = 0;
+                        }
+                    }
+                    CongestionAlgorithm::Cubic => {
+                        self.cubic_update(current_time);
+                    }
+                }
+            }
+            CongestionState::FastRecovery => {
+                match self.algorithm {
+                    CongestionAlgorithm::Reno => {
+                        // Exit fast recovery
+                        self.cwnd = self.ssthresh;
+                        self.state = CongestionState::CongestionAvoidance;
+                    }
+                    CongestionAlgorithm::NewReno => {
+                        // Partial ACK handling
+                        // If ACK advances past recovery_point, exit
+                        // Otherwise, retransmit and stay in recovery
+                        self.cwnd = self.ssthresh;
+                        self.state = CongestionState::CongestionAvoidance;
+                    }
+                    CongestionAlgorithm::Cubic => {
+                        self.cwnd = self.ssthresh;
+                        self.state = CongestionState::CongestionAvoidance;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle duplicate ACK
+    pub fn on_dup_ack(&mut self) {
+        self.dup_ack_count += 1;
+
+        if self.dup_ack_count == 3 {
+            // Triple duplicate ACK - enter fast recovery
+            self.enter_fast_recovery();
+        } else if self.state == CongestionState::FastRecovery {
+            // Inflate cwnd for each additional dup ack
+            self.cwnd += self.mss as u32;
+        }
+    }
+
+    /// Enter fast recovery
+    fn enter_fast_recovery(&mut self) {
+        self.ssthresh = (self.cwnd / 2).max(2 * self.mss as u32);
+        self.cwnd = self.ssthresh + 3 * self.mss as u32;
+        self.state = CongestionState::FastRecovery;
+
+        if self.algorithm == CongestionAlgorithm::Cubic {
+            self.cubic_w_max = self.cwnd;
+            self.cubic_last_congestion = crate::time::ticks();
+            // Calculate K = cbrt(W_max * (1-beta) / C)
+            let w_max_f = self.cubic_w_max as f32 / self.mss as f32;
+            let val = (w_max_f * (1.0 - Self::CUBIC_BETA)) / Self::CUBIC_C;
+            self.cubic_k = cbrt_approx(val);
+        }
+    }
+
+    /// Handle timeout
+    pub fn on_timeout(&mut self) {
+        self.ssthresh = (self.cwnd / 2).max(2 * self.mss as u32);
+        self.cwnd = self.mss as u32; // Reset to 1 MSS
+        self.state = CongestionState::SlowStart;
+        self.dup_ack_count = 0;
+
+        // Back off RTO
+        self.rto = (self.rto * 2).min(Self::MAX_RTO);
+    }
+
+    /// CUBIC window update
+    fn cubic_update(&mut self, current_time: u64) {
+        let elapsed = current_time.saturating_sub(self.cubic_last_congestion) as f32 / 1000.0; // seconds
+
+        // W_cubic(t) = C * (t - K)^3 + W_max
+        let t_minus_k = elapsed - self.cubic_k;
+        let w_cubic = Self::CUBIC_C * t_minus_k * t_minus_k * t_minus_k
+            + (self.cubic_w_max as f32 / self.mss as f32);
+
+        // TCP-friendly window
+        let w_tcp = (self.cubic_w_max as f32 / self.mss as f32) * Self::CUBIC_BETA
+            + 3.0 * (1.0 - Self::CUBIC_BETA) / (1.0 + Self::CUBIC_BETA) * elapsed;
+
+        // Use the larger of CUBIC and TCP-friendly
+        let target_cwnd = w_cubic.max(w_tcp) * self.mss as f32;
+
+        // Slowly adjust cwnd towards target
+        if target_cwnd > self.cwnd as f32 {
+            let increase = ((target_cwnd - self.cwnd as f32) / self.cwnd as f32 * self.mss as f32)
+                .max(1.0);
+            self.cwnd += increase as u32;
+        }
+    }
+
+    /// Get current statistics for debugging/monitoring
+    pub fn stats(&self) -> CongestionStats {
+        CongestionStats {
+            cwnd: self.cwnd,
+            ssthresh: self.ssthresh,
+            srtt: self.srtt,
+            rto: self.rto,
+            state: self.state,
+            algorithm: self.algorithm,
+        }
+    }
+}
+
+/// Congestion control statistics
+#[derive(Debug, Clone, Copy)]
+pub struct CongestionStats {
+    pub cwnd: u32,
+    pub ssthresh: u32,
+    pub srtt: u32,
+    pub rto: u32,
+    pub state: CongestionState,
+    pub algorithm: CongestionAlgorithm,
+}
+
 /// Conexão TCP
 pub struct TcpConnection {
     pub key: TcpConnKey,
@@ -107,6 +428,8 @@ pub struct TcpConnection {
     // ISN inicial
     pub iss: u32,
     pub irs: u32,
+    // Congestion control
+    pub congestion: CongestionControl,
 }
 
 impl TcpConnection {
@@ -123,7 +446,20 @@ impl TcpConnection {
             send_buffer: VecDeque::new(),
             iss,
             irs: 0,
+            congestion: CongestionControl::new(),
         }
+    }
+
+    /// Check if we can send more data (considering congestion window)
+    pub fn can_send(&self) -> bool {
+        self.congestion.can_send(self.snd_una, self.snd_nxt)
+    }
+
+    /// Get max bytes we can send
+    pub fn sendable_bytes(&self) -> u32 {
+        let flight = self.congestion.flight_size(self.snd_una, self.snd_nxt);
+        let window = self.congestion.effective_window();
+        window.saturating_sub(flight)
     }
 }
 
@@ -609,6 +945,16 @@ pub fn has_data(key: &TcpConnKey) -> bool {
         !conn.recv_buffer.is_empty()
     } else {
         false
+    }
+}
+
+/// Returns the number of bytes available to read (for FIONREAD ioctl)
+pub fn available_data(key: &TcpConnKey) -> usize {
+    let conns = TCP_CONNECTIONS.lock();
+    if let Some(conn) = conns.get(key) {
+        conn.recv_buffer.len()
+    } else {
+        0
     }
 }
 

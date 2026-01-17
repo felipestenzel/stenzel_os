@@ -7,6 +7,8 @@
 //! - ICMP (ping)
 //! - UDP (Layer 4)
 //! - TCP (Layer 4)
+//! - DNS (Domain Name Resolution)
+//! - DHCP (Dynamic Host Configuration)
 
 #![allow(dead_code)]
 
@@ -15,10 +17,17 @@ extern crate alloc;
 pub mod ethernet;
 pub mod arp;
 pub mod ipv4;
+pub mod ipv6;
 pub mod icmp;
 pub mod udp;
 pub mod tcp;
 pub mod socket;
+pub mod dns;
+pub mod dhcp;
+pub mod http;
+pub mod tls;
+pub mod wifi;
+pub mod ntp;
 
 use alloc::vec::Vec;
 use crate::sync::IrqSafeMutex;
@@ -142,6 +151,9 @@ pub fn init() {
         // Inicializa subsistemas
         arp::init();
         socket::init();
+        dns::init();
+        http::init();
+        tls::init();
 
         crate::kprintln!("net: stack inicializado");
     } else {

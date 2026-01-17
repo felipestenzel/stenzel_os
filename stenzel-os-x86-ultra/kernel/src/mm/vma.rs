@@ -90,8 +90,10 @@ pub struct Vma {
     pub prot: Protection,
     /// Flags
     pub flags: MapFlags,
-    /// Frames físicos alocados para esta VMA
-    pub frames: Vec<PhysFrame<Size4KiB>>,
+    /// Frames físicos alocados para esta VMA (None = not allocated yet, for demand paging)
+    pub frames: Vec<Option<PhysFrame<Size4KiB>>>,
+    /// Bitmap de páginas que são CoW (compartilhadas com outro processo)
+    pub cow_pages: Vec<bool>,
 }
 
 impl Vma {
@@ -153,7 +155,7 @@ impl VmaManager {
         None
     }
 
-    /// Cria um novo mapeamento anônimo
+    /// Cria um novo mapeamento anônimo (demand paging - páginas NÃO são alocadas imediatamente)
     pub fn mmap(
         &mut self,
         addr_hint: u64,
@@ -189,43 +191,19 @@ impl VmaManager {
             self.find_free_region(aligned_size).ok_or(KError::NoMemory)?
         };
 
-        // Aloca frames físicos
-        let mut frames = Vec::with_capacity(num_pages);
-        let mut fa = super::frame_allocator_lock();
-        for _ in 0..num_pages {
-            let frame = fa.allocate().ok_or(KError::NoMemory)?;
-            frames.push(frame);
-        }
-        drop(fa);
+        // DEMAND PAGING: Não aloca frames ainda, só registra a VMA
+        // Frames serão alocados sob demanda no page fault handler
+        let frames = alloc::vec![None; num_pages];
+        let cow_pages = alloc::vec![false; num_pages];
 
-        // Mapeia as páginas
-        let page_flags = prot.to_page_flags(true);
-        {
-            let mut mapper = super::mapper_lock();
-            let mut fa = super::frame_allocator_lock();
-
-            for (i, &frame) in frames.iter().enumerate() {
-                let page_addr = VirtAddr::new(addr + (i * 4096) as u64);
-                let page: Page<Size4KiB> = Page::containing_address(page_addr);
-                mapper.map_page(page, frame, page_flags, &mut *fa)?;
-
-                // Zero a página se for anônima
-                if flags.anonymous {
-                    let virt = super::phys_to_virt(frame.start_address());
-                    unsafe {
-                        core::ptr::write_bytes(virt.as_mut_ptr::<u8>(), 0, 4096);
-                    }
-                }
-            }
-        }
-
-        // Registra a VMA
+        // Registra a VMA (páginas não estão mapeadas ainda)
         let vma = Vma {
             start: addr,
             size: aligned_size,
             prot,
             flags,
             frames,
+            cow_pages,
         };
         self.vmas.insert(addr, vma);
 
@@ -235,6 +213,53 @@ impl VmaManager {
         }
 
         Ok(addr)
+    }
+
+    /// Aloca uma página on-demand (chamado pelo page fault handler)
+    pub fn handle_page_fault(&mut self, fault_addr: u64) -> KResult<()> {
+        let page_addr = fault_addr & !0xFFF;
+
+        // Encontra a VMA que contém este endereço
+        let vma = self.vmas.values_mut().find(|vma| vma.contains(fault_addr));
+        let vma = vma.ok_or(KError::Invalid)?;
+
+        // Calcula qual página dentro da VMA
+        let page_index = ((page_addr - vma.start) / 4096) as usize;
+
+        // Se já está alocada, não faz nada (pode ser erro de proteção)
+        if vma.frames.get(page_index).map(|f| f.is_some()).unwrap_or(false) {
+            // Página já alocada - provavelmente erro de proteção
+            return Err(KError::PermissionDenied);
+        }
+
+        // Aloca um frame físico
+        let mut fa = super::frame_allocator_lock();
+        let frame = fa.allocate().ok_or(KError::NoMemory)?;
+        drop(fa);
+
+        // Zero a página se for anônima
+        if vma.flags.anonymous {
+            let virt = super::phys_to_virt(frame.start_address());
+            unsafe {
+                core::ptr::write_bytes(virt.as_mut_ptr::<u8>(), 0, 4096);
+            }
+        }
+
+        // Mapeia a página
+        let page_flags = vma.prot.to_page_flags(true);
+        {
+            let mut mapper = super::mapper_lock();
+            let mut fa = super::frame_allocator_lock();
+            let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(page_addr));
+            mapper.map_page(page, frame, page_flags, &mut *fa)?;
+        }
+
+        // Registra o frame na VMA
+        if page_index < vma.frames.len() {
+            vma.frames[page_index] = Some(frame);
+        }
+
+        Ok(())
     }
 
     /// Remove um mapeamento
@@ -261,11 +286,13 @@ impl VmaManager {
                     let mut mapper = super::mapper_lock();
                     let mut fa = super::frame_allocator_lock();
                     for (i, frame) in vma.frames.iter().enumerate() {
-                        let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
-                        let page: Page<Size4KiB> = Page::containing_address(page_addr);
-                        let _ = mapper.unmap_page(page);
-                        // Libera o frame físico
-                        fa.deallocate(*frame);
+                        if let Some(frame) = frame {
+                            let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
+                            let page: Page<Size4KiB> = Page::containing_address(page_addr);
+                            let _ = mapper.unmap_page(page);
+                            // Libera o frame físico
+                            fa.deallocate(*frame);
+                        }
                     }
                 }
                 // Caso 2: VMA parcialmente contida - precisa split
@@ -280,10 +307,12 @@ impl VmaManager {
 
                     // Remove as páginas no meio
                     for i in start_page..end_page.min(vma.frames.len()) {
-                        let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
-                        let page: Page<Size4KiB> = Page::containing_address(page_addr);
-                        let _ = mapper.unmap_page(page);
-                        fa.deallocate(vma.frames[i]);
+                        if let Some(frame) = vma.frames[i] {
+                            let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
+                            let page: Page<Size4KiB> = Page::containing_address(page_addr);
+                            let _ = mapper.unmap_page(page);
+                            fa.deallocate(frame);
+                        }
                     }
 
                     drop(mapper);
@@ -297,6 +326,7 @@ impl VmaManager {
                             prot: vma.prot,
                             flags: vma.flags,
                             frames: vma.frames[..start_page].to_vec(),
+                            cow_pages: vma.cow_pages[..start_page].to_vec(),
                         };
                         self.vmas.insert(before_vma.start, before_vma);
                     }
@@ -309,6 +339,7 @@ impl VmaManager {
                             prot: vma.prot,
                             flags: vma.flags,
                             frames: vma.frames[end_page..].to_vec(),
+                            cow_pages: vma.cow_pages[end_page..].to_vec(),
                         };
                         self.vmas.insert(after_vma.start, after_vma);
                     }
@@ -322,10 +353,12 @@ impl VmaManager {
 
                     // Remove páginas do final
                     for i in keep_pages..vma.frames.len() {
-                        let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
-                        let page: Page<Size4KiB> = Page::containing_address(page_addr);
-                        let _ = mapper.unmap_page(page);
-                        fa.deallocate(vma.frames[i]);
+                        if let Some(frame) = vma.frames[i] {
+                            let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
+                            let page: Page<Size4KiB> = Page::containing_address(page_addr);
+                            let _ = mapper.unmap_page(page);
+                            fa.deallocate(frame);
+                        }
                     }
 
                     drop(mapper);
@@ -339,6 +372,7 @@ impl VmaManager {
                             prot: vma.prot,
                             flags: vma.flags,
                             frames: vma.frames[..keep_pages].to_vec(),
+                            cow_pages: vma.cow_pages[..keep_pages].to_vec(),
                         };
                         self.vmas.insert(trimmed_vma.start, trimmed_vma);
                     }
@@ -352,10 +386,12 @@ impl VmaManager {
 
                     // Remove páginas do início
                     for i in 0..remove_pages.min(vma.frames.len()) {
-                        let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
-                        let page: Page<Size4KiB> = Page::containing_address(page_addr);
-                        let _ = mapper.unmap_page(page);
-                        fa.deallocate(vma.frames[i]);
+                        if let Some(frame) = vma.frames[i] {
+                            let page_addr = VirtAddr::new(vma.start + (i * 4096) as u64);
+                            let page: Page<Size4KiB> = Page::containing_address(page_addr);
+                            let _ = mapper.unmap_page(page);
+                            fa.deallocate(frame);
+                        }
                     }
 
                     drop(mapper);
@@ -369,6 +405,7 @@ impl VmaManager {
                             prot: vma.prot,
                             flags: vma.flags,
                             frames: vma.frames[remove_pages..].to_vec(),
+                            cow_pages: vma.cow_pages[remove_pages..].to_vec(),
                         };
                         self.vmas.insert(trimmed_vma.start, trimmed_vma);
                     }
@@ -422,6 +459,28 @@ impl VmaManager {
     pub fn get_vma(&self, addr: u64) -> Option<&Vma> {
         self.vmas.values().find(|vma| vma.contains(addr))
     }
+
+    /// Remove uma VMA do tracking sem liberar frames físicos
+    /// Usado para shared memory detach onde os frames são gerenciados externamente
+    pub fn remove_vma(&mut self, addr: u64) -> KResult<()> {
+        // Simply remove the VMA entry without deallocating frames
+        // The frames are managed by the shared memory subsystem
+        if self.vmas.remove(&addr).is_some() {
+            Ok(())
+        } else {
+            // Try to find and remove VMA by address contained
+            let key_to_remove = self.vmas.iter()
+                .find(|(_, vma)| vma.start == addr)
+                .map(|(k, _)| *k);
+
+            if let Some(key) = key_to_remove {
+                self.vmas.remove(&key);
+                Ok(())
+            } else {
+                Err(KError::Invalid)
+            }
+        }
+    }
 }
 
 /// VMA manager global (simplificado para single process)
@@ -464,4 +523,81 @@ pub fn sys_mprotect(addr: u64, length: usize, prot: i32) -> KResult<()> {
     let mut guard = VMA_MANAGER.lock();
     let manager = guard.as_mut().ok_or(KError::NotSupported)?;
     manager.mprotect(addr, length, prot)
+}
+
+/// Handle page fault for demand paging (called from interrupt handler)
+pub fn handle_page_fault(fault_addr: u64) -> KResult<()> {
+    let mut guard = VMA_MANAGER.lock();
+    let manager = guard.as_mut().ok_or(KError::Invalid)?;
+    manager.handle_page_fault(fault_addr)
+}
+
+/// Handle CoW page fault (write to a page that was CoW-shared)
+/// Called when a write fault occurs on a present page that's marked as CoW
+pub fn handle_cow_page_fault(fault_addr: u64, old_phys: x86_64::PhysAddr) -> KResult<()> {
+    let mut guard = VMA_MANAGER.lock();
+    let manager = guard.as_mut().ok_or(KError::Invalid)?;
+
+    let page_addr = fault_addr & !0xFFF;
+
+    // Encontra a VMA que contém este endereço
+    let vma = manager.vmas.values_mut().find(|vma| vma.contains(fault_addr));
+    let vma = vma.ok_or(KError::Invalid)?;
+
+    // Verifica se a VMA permite escrita
+    if !vma.prot.write {
+        return Err(KError::PermissionDenied);
+    }
+
+    // Calcula qual página dentro da VMA
+    let page_index = ((page_addr - vma.start) / 4096) as usize;
+
+    // Verifica se esta página está marcada como CoW
+    if page_index >= vma.cow_pages.len() || !vma.cow_pages[page_index] {
+        return Err(KError::Invalid);
+    }
+
+    // Aloca novo frame
+    let mut fa = super::frame_allocator_lock();
+    let new_frame = fa.allocate().ok_or(KError::NoMemory)?;
+    drop(fa);
+
+    // Copia o conteúdo do frame antigo para o novo
+    let old_virt = super::phys_to_virt(old_phys);
+    let new_virt = super::phys_to_virt(new_frame.start_address());
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            old_virt.as_ptr::<u8>(),
+            new_virt.as_mut_ptr::<u8>(),
+            4096,
+        );
+    }
+
+    // Atualiza o mapeamento para apontar para o novo frame com permissão de escrita
+    let page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(page_addr));
+    let page_flags = vma.prot.to_page_flags(true);
+
+    {
+        let mut mapper = super::mapper_lock();
+        let mut fa = super::frame_allocator_lock();
+
+        // Desmapeia a página antiga
+        if let Ok((_old_frame, flush)) = mapper.unmap_page(page) {
+            flush();
+        }
+
+        // Mapeia o novo frame
+        mapper.map_page(page, new_frame, page_flags, &mut *fa)?;
+    }
+
+    // Decrementa referência do frame antigo no CoW manager
+    super::cow::decrement_ref(old_phys);
+
+    // Atualiza a VMA
+    if page_index < vma.frames.len() {
+        vma.frames[page_index] = Some(new_frame);
+    }
+    vma.cow_pages[page_index] = false;
+
+    Ok(())
 }

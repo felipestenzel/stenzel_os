@@ -1,13 +1,20 @@
 //! Driver de teclado PS/2 (i8042)
 //!
-//! Converte scancodes Set 1 para caracteres ASCII e mantém
-//! estado de modificadores (Shift, Ctrl, Alt, Caps Lock).
+//! Converte scancodes Set 1 para caracteres usando layout configurável.
+//! Suporta layouts: US, ABNT2
 
 use alloc::collections::VecDeque;
+use alloc::string::String;
+use alloc::vec::Vec;
 use spin::Mutex;
+
+use super::keyboard_layout::{self, KeyResult, Layout};
 
 /// Buffer de entrada do teclado (caracteres prontos para leitura)
 static INPUT_BUFFER: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+
+/// Buffer para caracteres UTF-8 multibyte
+static UTF8_BUFFER: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
 
 /// Estado dos modificadores
 static MODIFIERS: Mutex<Modifiers> = Mutex::new(Modifiers::new());
@@ -19,9 +26,13 @@ const BUFFER_CAPACITY: usize = 256;
 struct Modifiers {
     left_shift: bool,
     right_shift: bool,
-    ctrl: bool,
-    alt: bool,
+    left_ctrl: bool,
+    right_ctrl: bool,
+    left_alt: bool,
+    right_alt: bool,  // AltGr on international keyboards
     caps_lock: bool,
+    num_lock: bool,
+    scroll_lock: bool,
 }
 
 impl Modifiers {
@@ -29,72 +40,30 @@ impl Modifiers {
         Self {
             left_shift: false,
             right_shift: false,
-            ctrl: false,
-            alt: false,
+            left_ctrl: false,
+            right_ctrl: false,
+            left_alt: false,
+            right_alt: false,
             caps_lock: false,
+            num_lock: true,  // Num Lock usually starts on
+            scroll_lock: false,
         }
     }
 
     fn shift(&self) -> bool {
         self.left_shift || self.right_shift
     }
-}
 
-/// Converte scancode Set 1 para ASCII (sem shift)
-fn scancode_to_ascii(sc: u8) -> u8 {
-    match sc {
-        0x01 => 27,   // ESC
-        0x02 => b'1', 0x03 => b'2', 0x04 => b'3', 0x05 => b'4', 0x06 => b'5',
-        0x07 => b'6', 0x08 => b'7', 0x09 => b'8', 0x0A => b'9', 0x0B => b'0',
-        0x0C => b'-', 0x0D => b'=', 0x0E => 8,    // Backspace
-        0x0F => b'\t',
-        0x10 => b'q', 0x11 => b'w', 0x12 => b'e', 0x13 => b'r', 0x14 => b't',
-        0x15 => b'y', 0x16 => b'u', 0x17 => b'i', 0x18 => b'o', 0x19 => b'p',
-        0x1A => b'[', 0x1B => b']', 0x1C => b'\n', // Enter
-        0x1E => b'a', 0x1F => b's', 0x20 => b'd', 0x21 => b'f', 0x22 => b'g',
-        0x23 => b'h', 0x24 => b'j', 0x25 => b'k', 0x26 => b'l',
-        0x27 => b';', 0x28 => b'\'', 0x29 => b'`',
-        0x2B => b'\\',
-        0x2C => b'z', 0x2D => b'x', 0x2E => b'c', 0x2F => b'v', 0x30 => b'b',
-        0x31 => b'n', 0x32 => b'm',
-        0x33 => b',', 0x34 => b'.', 0x35 => b'/',
-        0x37 => b'*', // Keypad *
-        0x39 => b' ', // Space
-        // Keypad
-        0x47 => b'7', 0x48 => b'8', 0x49 => b'9', 0x4A => b'-',
-        0x4B => b'4', 0x4C => b'5', 0x4D => b'6', 0x4E => b'+',
-        0x4F => b'1', 0x50 => b'2', 0x51 => b'3',
-        0x52 => b'0', 0x53 => b'.',
-        _ => 0,
+    fn ctrl(&self) -> bool {
+        self.left_ctrl || self.right_ctrl
     }
-}
 
-/// Converte scancode Set 1 para ASCII (com shift)
-fn scancode_to_ascii_shift(sc: u8) -> u8 {
-    match sc {
-        0x01 => 27,   // ESC
-        0x02 => b'!', 0x03 => b'@', 0x04 => b'#', 0x05 => b'$', 0x06 => b'%',
-        0x07 => b'^', 0x08 => b'&', 0x09 => b'*', 0x0A => b'(', 0x0B => b')',
-        0x0C => b'_', 0x0D => b'+', 0x0E => 8,    // Backspace
-        0x0F => b'\t',
-        0x10 => b'Q', 0x11 => b'W', 0x12 => b'E', 0x13 => b'R', 0x14 => b'T',
-        0x15 => b'Y', 0x16 => b'U', 0x17 => b'I', 0x18 => b'O', 0x19 => b'P',
-        0x1A => b'{', 0x1B => b'}', 0x1C => b'\n', // Enter
-        0x1E => b'A', 0x1F => b'S', 0x20 => b'D', 0x21 => b'F', 0x22 => b'G',
-        0x23 => b'H', 0x24 => b'J', 0x25 => b'K', 0x26 => b'L',
-        0x27 => b':', 0x28 => b'"', 0x29 => b'~',
-        0x2B => b'|',
-        0x2C => b'Z', 0x2D => b'X', 0x2E => b'C', 0x2F => b'V', 0x30 => b'B',
-        0x31 => b'N', 0x32 => b'M',
-        0x33 => b'<', 0x34 => b'>', 0x35 => b'?',
-        0x37 => b'*', // Keypad *
-        0x39 => b' ', // Space
-        // Keypad (same as without shift)
-        0x47 => b'7', 0x48 => b'8', 0x49 => b'9', 0x4A => b'-',
-        0x4B => b'4', 0x4C => b'5', 0x4D => b'6', 0x4E => b'+',
-        0x4F => b'1', 0x50 => b'2', 0x51 => b'3',
-        0x52 => b'0', 0x53 => b'.',
-        _ => 0,
+    fn alt(&self) -> bool {
+        self.left_alt
+    }
+
+    fn alt_gr(&self) -> bool {
+        self.right_alt
     }
 }
 
@@ -104,17 +73,60 @@ const SC_RIGHT_SHIFT: u8 = 0x36;
 const SC_LEFT_CTRL: u8 = 0x1D;
 const SC_LEFT_ALT: u8 = 0x38;
 const SC_CAPS_LOCK: u8 = 0x3A;
+const SC_NUM_LOCK: u8 = 0x45;
+const SC_SCROLL_LOCK: u8 = 0x46;
 const SC_RELEASE_BIT: u8 = 0x80;
+
+// Extended scancode prefix
+const SC_EXTENDED: u8 = 0xE0;
+
+// Extended key scancodes (after 0xE0)
+const SC_EXT_RIGHT_CTRL: u8 = 0x1D;
+const SC_EXT_RIGHT_ALT: u8 = 0x38;  // AltGr
+
+/// State machine for extended scancodes
+static EXTENDED_PENDING: Mutex<bool> = Mutex::new(false);
 
 /// Processa um scancode recebido da IRQ do teclado.
 /// Chamado pelo interrupt handler.
 pub fn process_scancode(scancode: u8) {
-    let mut mods = MODIFIERS.lock();
+    // Check for extended scancode prefix
+    if scancode == SC_EXTENDED {
+        *EXTENDED_PENDING.lock() = true;
+        return;
+    }
 
+    let is_extended = {
+        let mut ext = EXTENDED_PENDING.lock();
+        let was_extended = *ext;
+        *ext = false;
+        was_extended
+    };
+
+    let mut mods = MODIFIERS.lock();
     let is_release = (scancode & SC_RELEASE_BIT) != 0;
     let key = scancode & !SC_RELEASE_BIT;
 
-    // Atualiza estado dos modificadores
+    // Report key event to the input subsystem
+    super::input::report_key(key, !is_release);
+
+    // Handle extended keys (after E0 prefix)
+    if is_extended {
+        match key {
+            SC_EXT_RIGHT_CTRL => {
+                mods.right_ctrl = !is_release;
+                return;
+            }
+            SC_EXT_RIGHT_ALT => {
+                mods.right_alt = !is_release;
+                return;
+            }
+            // Add more extended keys as needed (arrows, home, end, etc.)
+            _ => {}
+        }
+    }
+
+    // Atualiza estado dos modificadores normais
     match key {
         SC_LEFT_SHIFT => {
             mods.left_shift = !is_release;
@@ -125,15 +137,26 @@ pub fn process_scancode(scancode: u8) {
             return;
         }
         SC_LEFT_CTRL => {
-            mods.ctrl = !is_release;
+            mods.left_ctrl = !is_release;
             return;
         }
         SC_LEFT_ALT => {
-            mods.alt = !is_release;
+            mods.left_alt = !is_release;
             return;
         }
         SC_CAPS_LOCK if !is_release => {
             mods.caps_lock = !mods.caps_lock;
+            update_leds(&mods);
+            return;
+        }
+        SC_NUM_LOCK if !is_release => {
+            mods.num_lock = !mods.num_lock;
+            update_leds(&mods);
+            return;
+        }
+        SC_SCROLL_LOCK if !is_release => {
+            mods.scroll_lock = !mods.scroll_lock;
+            update_leds(&mods);
             return;
         }
         _ => {}
@@ -144,38 +167,75 @@ pub fn process_scancode(scancode: u8) {
         return;
     }
 
-    // Converte para ASCII
-    let base = if mods.shift() {
-        scancode_to_ascii_shift(key)
-    } else {
-        scancode_to_ascii(key)
-    };
+    // Get shift state considering caps lock
+    let effective_shift = mods.shift() ^ mods.caps_lock;
 
-    // Aplica Caps Lock apenas para letras
-    let ascii = if mods.caps_lock && !mods.shift() && base >= b'a' && base <= b'z' {
-        base - 32 // Converte para maiúscula
-    } else if mods.caps_lock && mods.shift() && base >= b'A' && base <= b'Z' {
-        base + 32 // Converte para minúscula (shift + caps = minúscula)
-    } else {
-        base
-    };
+    // Convert using layout
+    let result = keyboard_layout::scancode_to_char(key, effective_shift, mods.alt_gr());
 
-    // Ctrl+C = 0x03, Ctrl+D = 0x04, etc.
-    let final_char = if mods.ctrl && ascii >= b'a' && ascii <= b'z' {
-        ascii - b'a' + 1
-    } else if mods.ctrl && ascii >= b'A' && ascii <= b'Z' {
-        ascii - b'A' + 1
-    } else {
-        ascii
-    };
-
-    // Adiciona ao buffer se é um caractere válido
-    if final_char != 0 {
-        let mut buf = INPUT_BUFFER.lock();
-        if buf.len() < BUFFER_CAPACITY {
-            buf.push_back(final_char);
+    match result {
+        KeyResult::Char(ch) => {
+            process_char(ch, &mods);
+        }
+        KeyResult::ExtChar(s) => {
+            // Add UTF-8 bytes to buffer
+            for b in s.bytes() {
+                add_to_buffer(b);
+            }
+        }
+        KeyResult::Dead(_) => {
+            // Dead key state is handled in the layout module
+            // Nothing to add to buffer yet
+        }
+        KeyResult::None => {
+            // Unknown or modifier key
         }
     }
+}
+
+/// Process a single ASCII character with modifiers
+fn process_char(mut ascii: u8, mods: &Modifiers) {
+    // Ctrl+letter combinations
+    if mods.ctrl() && ascii >= b'a' && ascii <= b'z' {
+        ascii = ascii - b'a' + 1;
+    } else if mods.ctrl() && ascii >= b'A' && ascii <= b'Z' {
+        ascii = ascii - b'A' + 1;
+    }
+
+    // Tratamento especial para Ctrl+C (SIGINT)
+    if ascii == 3 {
+        // Envia SIGINT para o processo foreground
+        crate::sched::send_sigint_to_foreground();
+    }
+
+    add_to_buffer(ascii);
+}
+
+/// Add a byte to the input buffer
+fn add_to_buffer(byte: u8) {
+    if byte != 0 {
+        let mut buf = INPUT_BUFFER.lock();
+        if buf.len() < BUFFER_CAPACITY {
+            buf.push_back(byte);
+        }
+    }
+}
+
+/// Update keyboard LEDs (Caps Lock, Num Lock, Scroll Lock)
+fn update_leds(mods: &Modifiers) {
+    let mut led_state = 0u8;
+    if mods.scroll_lock { led_state |= 1; }
+    if mods.num_lock { led_state |= 2; }
+    if mods.caps_lock { led_state |= 4; }
+
+    // Send LED update command to keyboard
+    // This requires writing to the keyboard controller
+    // For simplicity, we'll skip the actual hardware write
+    // In a full implementation:
+    // 1. Write 0xED to port 0x60
+    // 2. Wait for ACK (0xFA)
+    // 3. Write led_state to port 0x60
+    let _ = led_state; // Suppress unused warning
 }
 
 /// Lê um caractere do buffer de entrada (não-bloqueante).
@@ -187,4 +247,34 @@ pub fn read_char() -> Option<u8> {
 /// Verifica se há caracteres disponíveis para leitura.
 pub fn has_input() -> bool {
     !INPUT_BUFFER.lock().is_empty()
+}
+
+/// Get current keyboard layout
+pub fn current_layout() -> Layout {
+    keyboard_layout::current_layout()
+}
+
+/// Set keyboard layout
+pub fn set_layout(layout: Layout) {
+    keyboard_layout::set_layout(layout);
+}
+
+/// Set keyboard layout by name
+pub fn set_layout_by_name(name: &str) -> bool {
+    if let Some(layout) = keyboard_layout::parse_layout(name) {
+        keyboard_layout::set_layout(layout);
+        true
+    } else {
+        false
+    }
+}
+
+/// List available layouts
+pub fn available_layouts() -> &'static [Layout] {
+    keyboard_layout::available_layouts()
+}
+
+/// Initialize keyboard driver
+pub fn init() {
+    crate::kprintln!("keyboard: initialized with {} layout", current_layout().name());
 }
