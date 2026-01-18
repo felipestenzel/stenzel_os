@@ -9,3 +9,7 @@
 #![allow(dead_code)]
 
 pub mod perf;
+pub mod ebpf;
+pub mod ftrace;
+pub mod cpuprof;
+pub mod memprof;

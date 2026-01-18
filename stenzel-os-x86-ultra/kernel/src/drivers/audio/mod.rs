@@ -17,6 +17,7 @@ pub mod codecs;
 pub mod daemon;
 pub mod hda;
 pub mod hdmi;
+pub mod lowlatency;
 pub mod mixer;
 pub mod pcspkr;
 pub mod pulse;

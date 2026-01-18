@@ -2,6 +2,7 @@
 //!
 //! Provides windowing, compositing, and graphical user interface components.
 
+pub mod accessibility;
 pub mod animations;
 pub mod apps;
 pub mod compositor;
@@ -48,6 +49,11 @@ pub use icons::{IconData, BuiltinIcon, IconError};
 pub use cursors::{CursorType, CursorImage, CursorError};
 pub use fonts::{Font, FontMetrics, TextLayout, RenderedText, FontError};
 pub use wallpaper::{WallpaperInfo, ScaleMode, WallpaperError};
+pub use accessibility::{
+    ScreenReader, AccessibleRole, AccessibleState, AccessibleElement,
+    SpeechPriority, SpeechUtterance, VerbosityLevel, NavigationMode,
+    ScreenReaderConfig, ScreenReaderStats,
+};
 
 /// Initialize the GUI subsystem
 pub fn init() {
@@ -61,6 +67,7 @@ pub fn init() {
     fonts::init();
     wallpaper::init();
     settings::init();
+    accessibility::init();
 
     // Initialize desktop if compositor is available
     if let Some((width, height)) = compositor::screen_size() {

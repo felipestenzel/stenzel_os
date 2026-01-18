@@ -109,6 +109,39 @@ pub mod device_ids {
     pub const ADL_GT1: u16 = 0x4680;
     pub const ADL_GT2: u16 = 0x4682;
     pub const ADL_N: u16 = 0x46D0;
+
+    // Gen12.5 / Xe-HPG (DG1 - First discrete)
+    pub const DG1: u16 = 0x4905;
+    pub const DG1_1: u16 = 0x4906;
+
+    // Gen12.7 / Xe-HPG (DG2 - Arc Alchemist)
+    // Arc A770/A750 (ACM-G10)
+    pub const ARC_A770_1: u16 = 0x5690;
+    pub const ARC_A770_2: u16 = 0x5691;
+    pub const ARC_A770_3: u16 = 0x5692;
+    pub const ARC_A750_1: u16 = 0x5693;
+    pub const ARC_A750_2: u16 = 0x5694;
+    // Arc A580 (ACM-G10)
+    pub const ARC_A580_1: u16 = 0x5695;
+    pub const ARC_A580_2: u16 = 0x5696;
+    // Arc A380/A310 (ACM-G11)
+    pub const ARC_A380_1: u16 = 0x56A0;
+    pub const ARC_A380_2: u16 = 0x56A1;
+    pub const ARC_A310_1: u16 = 0x56A5;
+    pub const ARC_A310_2: u16 = 0x56A6;
+    // Arc Mobile (ACM-G10/G11)
+    pub const ARC_A770M: u16 = 0x5697;
+    pub const ARC_A730M: u16 = 0x5698;
+    pub const ARC_A550M: u16 = 0x5699;
+    pub const ARC_A370M: u16 = 0x56A3;
+    pub const ARC_A350M: u16 = 0x56A4;
+    // Arc Pro (workstation)
+    pub const ARC_PRO_A60: u16 = 0x56C0;
+    pub const ARC_PRO_A60_1: u16 = 0x56C1;
+    pub const ARC_PRO_A40: u16 = 0x56C2;
+    pub const ARC_PRO_A30M: u16 = 0x56B0;
+    pub const ARC_PRO_A50: u16 = 0x56B1;
+    pub const ARC_PRO_A60M: u16 = 0x56B2;
 }
 
 /// GPU generation
@@ -124,7 +157,18 @@ pub enum GpuGeneration {
     Gen9_5,
     Gen11,
     Gen12,
+    Gen12_5,  // DG1 - First discrete GPU
+    XeHpg,    // Arc (DG2/Alchemist) - High Performance Graphics
     Unknown,
+}
+
+/// GPU type (integrated vs discrete)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuType {
+    /// Integrated GPU (shares system memory)
+    Integrated,
+    /// Discrete GPU (has dedicated VRAM)
+    Discrete,
 }
 
 impl GpuGeneration {
@@ -147,6 +191,14 @@ impl GpuGeneration {
             | CFL_GT2 | CFL_GT2_1 => GpuGeneration::Gen9_5,
             ICL_GT0_5 | ICL_GT1 | ICL_GT1_5 | ICL_GT2 => GpuGeneration::Gen11,
             TGL_GT1 | TGL_GT2 | TGL_GT2_1 | ADL_GT1 | ADL_GT2 | ADL_N => GpuGeneration::Gen12,
+            // DG1 (First discrete Intel GPU)
+            DG1 | DG1_1 => GpuGeneration::Gen12_5,
+            // Arc Alchemist (DG2) - Desktop and Mobile
+            ARC_A770_1 | ARC_A770_2 | ARC_A770_3 | ARC_A750_1 | ARC_A750_2
+            | ARC_A580_1 | ARC_A580_2 | ARC_A380_1 | ARC_A380_2 | ARC_A310_1 | ARC_A310_2
+            | ARC_A770M | ARC_A730M | ARC_A550M | ARC_A370M | ARC_A350M
+            | ARC_PRO_A60 | ARC_PRO_A60_1 | ARC_PRO_A40
+            | ARC_PRO_A30M | ARC_PRO_A50 | ARC_PRO_A60M => GpuGeneration::XeHpg,
             _ => GpuGeneration::Unknown,
         }
     }
@@ -162,7 +214,42 @@ impl GpuGeneration {
             GpuGeneration::Gen8 => 1024 * 1024 * 1024,
             GpuGeneration::Gen9 | GpuGeneration::Gen9_5 => 2048 * 1024 * 1024, // 2 GB
             GpuGeneration::Gen11 | GpuGeneration::Gen12 => 2048 * 1024 * 1024,
+            GpuGeneration::Gen12_5 => 4 * 1024 * 1024 * 1024, // 4 GB (DG1)
+            GpuGeneration::XeHpg => 8 * 1024 * 1024 * 1024,   // 8-16 GB (Arc)
             GpuGeneration::Unknown => 256 * 1024 * 1024,
+        }
+    }
+
+    /// Check if this is a discrete GPU
+    pub fn is_discrete(&self) -> bool {
+        matches!(self, GpuGeneration::Gen12_5 | GpuGeneration::XeHpg)
+    }
+
+    /// Get GPU type
+    pub fn gpu_type(&self) -> GpuType {
+        if self.is_discrete() {
+            GpuType::Discrete
+        } else {
+            GpuType::Integrated
+        }
+    }
+
+    /// Get generation name
+    pub fn name(&self) -> &'static str {
+        match self {
+            GpuGeneration::Gen4 => "Gen4 (965/G45)",
+            GpuGeneration::Gen5 => "Gen5 (Ironlake)",
+            GpuGeneration::Gen6 => "Gen6 (Sandy Bridge)",
+            GpuGeneration::Gen7 => "Gen7 (Ivy Bridge)",
+            GpuGeneration::Gen7_5 => "Gen7.5 (Haswell)",
+            GpuGeneration::Gen8 => "Gen8 (Broadwell)",
+            GpuGeneration::Gen9 => "Gen9 (Skylake)",
+            GpuGeneration::Gen9_5 => "Gen9.5 (Kaby/Coffee Lake)",
+            GpuGeneration::Gen11 => "Gen11 (Ice Lake)",
+            GpuGeneration::Gen12 => "Gen12/Xe (Tiger/Alder Lake)",
+            GpuGeneration::Gen12_5 => "Gen12.5/Xe-LP (DG1)",
+            GpuGeneration::XeHpg => "Xe-HPG (Arc Alchemist)",
+            GpuGeneration::Unknown => "Unknown",
         }
     }
 }

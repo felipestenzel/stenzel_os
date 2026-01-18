@@ -18,6 +18,13 @@ pub mod updater;
 pub mod recovery;
 pub mod dualboot;
 pub mod timezone;
+pub mod recovery_partition;
+pub mod luks;
+pub mod cloud;
+pub mod docker;
+pub mod ab_partitions;
+pub mod factory_reset;
+pub mod backup;
 
 use alloc::string::String;
 use alloc::vec::Vec;

@@ -67,41 +67,157 @@ pub mod device_ids {
     pub const STONEY: u16 = 0x98E4;     // A9-9400 APU
 
     // =========================================================================
-    // GCN 3.0 (Arctic Islands / Polaris) - RX 400/500 series
+    // GCN 4.0 (Arctic Islands / Polaris) - RX 400/500 series
     // =========================================================================
-    pub const POLARIS10_XT: u16 = 0x67DF; // RX 480
-    pub const POLARIS10_PRO: u16 = 0x67EF; // RX 470
-    pub const POLARIS11_XT: u16 = 0x67FF; // RX 460
-    pub const POLARIS11_PRO: u16 = 0x67E0; // RX 560
-    pub const POLARIS12: u16 = 0x699F;  // RX 550
+    // Polaris 10 (Ellesmere) - High-end
+    pub const POLARIS10_XT: u16 = 0x67DF;   // RX 480/580
+    pub const POLARIS10_XT2: u16 = 0x67C4;  // RX 480/580 variant
+    pub const POLARIS10_XT3: u16 = 0x67C7;  // RX 480/580 variant
+    pub const POLARIS10_PRO: u16 = 0x67EF;  // RX 470/570
+    pub const POLARIS10_PRO2: u16 = 0x67CA; // RX 470/570 variant
+    pub const POLARIS10_PRO3: u16 = 0x67CC; // RX 470/570 variant
+    pub const POLARIS10_PRO4: u16 = 0x67CF; // RX 470/570 variant
+    pub const POLARIS10_D1: u16 = 0x6FDF;   // RX 580 2048SP
+    pub const POLARIS10_GL: u16 = 0x67C0;   // WX 7100 (Pro)
+    pub const POLARIS10_GL2: u16 = 0x67C2;  // WX 5100 (Pro)
+    pub const POLARIS10_GL3: u16 = 0x67C1;  // WX 4100 (Pro)
 
-    // RX 500 series (Polaris refresh)
-    pub const POLARIS10_XT2: u16 = 0x67DF; // RX 580 (same PCI ID)
-    pub const POLARIS10_PRO2: u16 = 0x67EF; // RX 570 (same PCI ID)
-    pub const POLARIS11_XT2: u16 = 0x67FF; // RX 560 (same PCI ID)
+    // Polaris 11 (Baffin) - Mid-range
+    pub const POLARIS11_XT: u16 = 0x67FF;   // RX 460/560
+    pub const POLARIS11_XT2: u16 = 0x67E1;  // RX 460/560 variant
+    pub const POLARIS11_XT3: u16 = 0x67E3;  // RX 460/560 variant
+    pub const POLARIS11_PRO: u16 = 0x67E0;  // RX 560D
+    pub const POLARIS11_PRO2: u16 = 0x67E7; // RX 560 variant
+    pub const POLARIS11_PRO3: u16 = 0x67E9; // RX 560 variant
+    pub const POLARIS11_GL: u16 = 0x67E8;   // WX 4170 (Pro)
+    pub const POLARIS11_GL2: u16 = 0x67EB;  // Pro WX 4150
+
+    // Polaris 12 (Lexa) - Entry-level
+    pub const POLARIS12_XT: u16 = 0x699F;   // RX 550
+    pub const POLARIS12_XL: u16 = 0x6987;   // RX 550 variant
+    pub const POLARIS12_XL2: u16 = 0x6981;  // RX 550 variant
+    pub const POLARIS12_XL3: u16 = 0x6985;  // RX 550X
+    pub const POLARIS12_GL: u16 = 0x6980;   // Pro WX 2100
+    pub const POLARIS12_GL2: u16 = 0x6984;  // Pro 560 OEM
+
+    // Polaris Mobile variants
+    pub const POLARIS10_M: u16 = 0x67E8;    // Radeon Pro 460
+    pub const POLARIS10_M2: u16 = 0x67EB;   // Radeon Pro 455
+    pub const POLARIS11_M: u16 = 0x67FE;    // RX 560M
+    pub const POLARIS11_M2: u16 = 0x67EF;   // RX 460M (different revision)
+    pub const POLARIS12_M: u16 = 0x6995;    // RX 550M
+    pub const POLARIS12_M2: u16 = 0x6997;   // RX 550M variant
+
+    // Polaris Embedded/OEM
+    pub const POLARIS10_E: u16 = 0x67D0;    // Embedded RX 480
+    pub const POLARIS11_E: u16 = 0x67F0;    // Embedded RX 460
+    pub const POLARIS12_E: u16 = 0x6986;    // Embedded RX 550
 
     // =========================================================================
-    // GCN 5.0 (Vega) - RX Vega series
+    // GCN 5.0 (Vega) - RX Vega / Radeon VII / Vega APUs
     // =========================================================================
-    pub const VEGA10_XT: u16 = 0x687F;  // RX Vega 64
-    pub const VEGA10_XL: u16 = 0x687E;  // RX Vega 56
-    pub const VEGA10_XTX: u16 = 0x6863; // Vega Frontier
-    pub const VEGA12: u16 = 0x69AF;     // Vega 12
-    pub const VEGA20_XT: u16 = 0x66A0;  // Radeon VII
-    pub const VEGA20_XL: u16 = 0x66A1;  // Radeon Pro VII
-    pub const RAVEN: u16 = 0x15DD;      // Ryzen APU (Vega 8/11)
-    pub const RAVEN2: u16 = 0x15D8;     // Ryzen APU (Vega 3/8)
-    pub const RENOIR: u16 = 0x1636;     // Ryzen 4000 APU
+    // Vega 10 (discrete desktop/workstation)
+    pub const VEGA10_XT: u16 = 0x687F;    // RX Vega 64
+    pub const VEGA10_XT2: u16 = 0x6867;   // RX Vega 64 variant
+    pub const VEGA10_XL: u16 = 0x6861;    // RX Vega 56
+    pub const VEGA10_XL2: u16 = 0x687E;   // RX Vega 56 variant
+    pub const VEGA10_XTX: u16 = 0x6863;   // Vega Frontier Edition
+    pub const VEGA10_XTRA: u16 = 0x6860;  // Vega Frontier Edition Air
+    pub const VEGA10_XTRX: u16 = 0x6864;  // Vega Frontier Edition Liquid
+    pub const VEGA10_GL: u16 = 0x6868;    // Radeon Pro WX 8200
+    pub const VEGA10_GL2: u16 = 0x686A;   // Radeon Pro WX 8100
+    pub const VEGA10_GL3: u16 = 0x686B;   // Radeon Pro V340
+    pub const VEGA10_GL4: u16 = 0x686C;   // Radeon Instinct MI25
+    pub const VEGA10_GL5: u16 = 0x686D;   // Radeon Pro V320
+    pub const VEGA10_SSG: u16 = 0x686E;   // Radeon Pro SSG
+
+    // Vega 12 (mobile workstation)
+    pub const VEGA12_GL: u16 = 0x69A0;    // Radeon Pro Vega 20
+    pub const VEGA12_GL2: u16 = 0x69A1;   // Radeon Pro Vega 16
+    pub const VEGA12_GL3: u16 = 0x69A2;   // Radeon Pro Vega 20 variant
+    pub const VEGA12_GL4: u16 = 0x69A3;   // Radeon Pro Vega 16 variant
+    pub const VEGA12_XT: u16 = 0x69AF;    // Vega 12 (unreleased consumer)
+
+    // Vega 20 (7nm - Radeon VII)
+    pub const VEGA20_XT: u16 = 0x66A0;    // Radeon VII
+    pub const VEGA20_XT2: u16 = 0x66A2;   // Radeon VII variant
+    pub const VEGA20_XL: u16 = 0x66A1;    // Radeon Pro VII
+    pub const VEGA20_XL2: u16 = 0x66A3;   // Radeon Pro VII variant
+    pub const VEGA20_GL: u16 = 0x66A7;    // Radeon Instinct MI50
+    pub const VEGA20_GL2: u16 = 0x66AF;   // Radeon Instinct MI60
+
+    // Raven Ridge APU (Ryzen 2000 Mobile / 2000G Desktop)
+    pub const RAVEN: u16 = 0x15DD;        // Vega 8/11 (2200G/2400G)
+    pub const RAVEN_D1: u16 = 0x15D8;     // Vega 3/8 variant
+    pub const RAVEN_D2: u16 = 0x15D9;     // Vega variant
+    pub const RAVEN_M: u16 = 0x15DE;      // Vega 8 Mobile (Ryzen 5 2500U)
+    pub const RAVEN_M2: u16 = 0x15DF;     // Vega 6 Mobile (Ryzen 3 2300U)
+
+    // Picasso APU (Ryzen 3000 Mobile / 3000G Desktop)
+    pub const PICASSO: u16 = 0x15D8;      // Vega 8/11 (3200G/3400G)
+    pub const PICASSO_M: u16 = 0x15E7;    // Vega 8 Mobile (Ryzen 5 3500U)
+    pub const PICASSO_M2: u16 = 0x15E8;   // Vega 6 Mobile
+    pub const PICASSO_M3: u16 = 0x15E9;   // Vega 3 Mobile
+
+    // Renoir APU (Ryzen 4000 Mobile / PRO 4000)
+    pub const RENOIR: u16 = 0x1636;       // Vega 7 (4600U/4700U)
+    pub const RENOIR_XT: u16 = 0x1638;    // Vega 8 (4800U/4900H)
+    pub const RENOIR_PRO: u16 = 0x164C;   // Vega Pro (PRO 4650U)
+    pub const RENOIR_PRO2: u16 = 0x164D;  // Vega Pro variant
+    pub const RENOIR_M: u16 = 0x1637;     // Vega 6 Mobile
+    pub const RENOIR_M2: u16 = 0x1639;    // Vega 5 Mobile
+
+    // Cezanne APU (Ryzen 5000 Mobile / 5000G Desktop)
+    pub const CEZANNE: u16 = 0x1681;      // Vega (5600G/5700G)
+    pub const CEZANNE_XT: u16 = 0x1682;   // Vega variant
+    pub const CEZANNE_M: u16 = 0x1638;    // Vega 8 Mobile (5800U)
+    pub const CEZANNE_PRO: u16 = 0x164E;  // Vega Pro (PRO 5650U)
+    pub const CEZANNE_PRO2: u16 = 0x164F; // Vega Pro variant
+
+    // Lucienne APU (Ryzen 5000 Mobile - Zen 2 refresh)
+    pub const LUCIENNE: u16 = 0x164C;     // Vega 7 (5500U)
+    pub const LUCIENNE_M: u16 = 0x1636;   // Vega 6 (5300U)
 
     // =========================================================================
-    // RDNA 1 (Navi 10) - RX 5000 series
+    // RDNA 1 (Navi 10/14) - RX 5000 series
     // =========================================================================
-    pub const NAVI10_XT: u16 = 0x731F;  // RX 5700 XT
-    pub const NAVI10_XL: u16 = 0x7340;  // RX 5700
-    pub const NAVI10_XLE: u16 = 0x7341; // RX 5600 XT
-    pub const NAVI14_XT: u16 = 0x7360;  // RX 5500 XT
-    pub const NAVI14_XTM: u16 = 0x7362; // RX 5500M
-    pub const NAVI14_XLM: u16 = 0x7363; // RX 5300M
+    // Navi 10 (High-end desktop) - RX 5700 XT / 5700 / 5600 XT
+    pub const NAVI10_XT: u16 = 0x731F;    // RX 5700 XT
+    pub const NAVI10_XT2: u16 = 0x7310;   // RX 5700 XT 50th Anniversary
+    pub const NAVI10_XL: u16 = 0x7312;    // RX 5700
+    pub const NAVI10_XL2: u16 = 0x7340;   // RX 5700 variant
+    pub const NAVI10_XLE: u16 = 0x7341;   // RX 5600 XT
+    pub const NAVI10_XLE2: u16 = 0x7347;  // RX 5600 XT variant
+    pub const NAVI10_GL: u16 = 0x7318;    // Radeon Pro W5700
+    pub const NAVI10_GL2: u16 = 0x7319;   // Radeon Pro W5700X
+    pub const NAVI10_GL3: u16 = 0x731A;   // Radeon Pro 5700 XT
+    pub const NAVI10_GL4: u16 = 0x731B;   // Radeon Pro 5700
+
+    // Navi 10 Mobile variants
+    pub const NAVI10_M_XT: u16 = 0x7348;  // RX 5700M
+    pub const NAVI10_M_XL: u16 = 0x7349;  // RX 5600M
+    pub const NAVI10_M_PRO: u16 = 0x734A; // Radeon Pro 5600M
+
+    // Navi 14 (Mid-range desktop/mobile) - RX 5500 XT / 5500 / 5300
+    pub const NAVI14_XT: u16 = 0x7360;    // RX 5500 XT
+    pub const NAVI14_XT2: u16 = 0x7361;   // RX 5500 XT variant
+    pub const NAVI14_XL: u16 = 0x7362;    // RX 5500
+    pub const NAVI14_GL: u16 = 0x7364;    // Radeon Pro W5500
+    pub const NAVI14_GL2: u16 = 0x7365;   // Radeon Pro W5500X
+    pub const NAVI14_GL3: u16 = 0x7366;   // Radeon Pro 5500 XT
+
+    // Navi 14 Mobile variants
+    pub const NAVI14_XTM: u16 = 0x7340;   // RX 5500M (shares ID space)
+    pub const NAVI14_XLM: u16 = 0x7341;   // RX 5300M (shares ID space)
+    pub const NAVI14_M_XT: u16 = 0x7368;  // RX 5500M variant
+    pub const NAVI14_M_XL: u16 = 0x7369;  // RX 5300M variant
+    pub const NAVI14_M_PRO: u16 = 0x736A; // Radeon Pro 5500M
+    pub const NAVI14_M_PRO2: u16 = 0x736B; // Radeon Pro 5300M
+
+    // Navi 12 (Apple exclusive) - Radeon Pro 5600M
+    pub const NAVI12: u16 = 0x7408;       // Radeon Pro 5600M (MacBook Pro)
+    pub const NAVI12_PRO: u16 = 0x7409;   // Radeon Pro 5600M variant
+    pub const NAVI12_GL: u16 = 0x740A;    // Radeon Pro W5600M
 
     // =========================================================================
     // RDNA 2 (Navi 2x) - RX 6000 series
@@ -121,12 +237,43 @@ pub mod device_ids {
     // =========================================================================
     // RDNA 3 (Navi 3x) - RX 7000 series
     // =========================================================================
-    pub const NAVI31_XT: u16 = 0x744C;  // RX 7900 XTX
-    pub const NAVI31_XL: u16 = 0x744E;  // RX 7900 XT
+    // Navi 31 (high-end desktop)
+    pub const NAVI31_XTX: u16 = 0x744C; // RX 7900 XTX
+    pub const NAVI31_XT: u16 = 0x744E;  // RX 7900 XT
+    pub const NAVI31_XL: u16 = 0x744D;  // RX 7900 GRE
+    pub const NAVI31_PRO: u16 = 0x7448; // Radeon PRO W7900
+
+    // Navi 32 (mid-range desktop)
     pub const NAVI32_XT: u16 = 0x7470;  // RX 7800 XT
     pub const NAVI32_XL: u16 = 0x7471;  // RX 7700 XT
+    pub const NAVI32_PRO: u16 = 0x7472; // Radeon PRO W7800
+
+    // Navi 33 (entry-level desktop and mobile)
     pub const NAVI33_XT: u16 = 0x7480;  // RX 7600
-    pub const PHOENIX: u16 = 0x15BF;    // Ryzen 7040 APU
+    pub const NAVI33_XTX: u16 = 0x7481; // RX 7600 XT
+    pub const NAVI33_XL: u16 = 0x7483;  // RX 7500 XT (placeholder)
+    pub const NAVI33_XTM: u16 = 0x7489; // RX 7700S
+    pub const NAVI33_XLM: u16 = 0x748A; // RX 7600S
+    pub const NAVI33_PRO: u16 = 0x7484; // Radeon PRO W7600
+    pub const NAVI33_PRO_M: u16 = 0x7485; // Radeon PRO W7500
+
+    // Mobile Navi 31/32 variants
+    pub const NAVI31_M_XT: u16 = 0x7458; // RX 7900M
+    pub const NAVI32_M_XT: u16 = 0x7478; // RX 7800M
+    pub const NAVI32_M_XL: u16 = 0x7479; // RX 7700M
+
+    // =========================================================================
+    // RDNA 3.5 (Phoenix/Hawk Point APUs)
+    // =========================================================================
+    pub const PHOENIX: u16 = 0x15BF;    // Ryzen 7040 APU (Phoenix)
+    pub const PHOENIX2: u16 = 0x15C8;   // Ryzen 7040U (Phoenix2)
+    pub const HAWK_POINT: u16 = 0x15C0; // Ryzen 8040 APU (Hawk Point)
+
+    // =========================================================================
+    // RDNA 3+ (Strix Point APU)
+    // =========================================================================
+    pub const STRIX_POINT: u16 = 0x1900; // Ryzen AI 9 HX (Strix Point)
+    pub const STRIX_HALO: u16 = 0x1901;  // Ryzen AI Max (Strix Halo)
 }
 
 /// GPU architecture/family
@@ -148,6 +295,10 @@ pub enum GpuFamily {
     Navi2x,
     /// RDNA 3 - Navi 3x (RX 7000)
     Navi3x,
+    /// RDNA 3.5 - Phoenix/Hawk Point APUs
+    Phoenix,
+    /// RDNA 3+ - Strix Point APUs
+    StrixPoint,
     /// Unknown family
     Unknown,
 }
@@ -168,25 +319,66 @@ impl GpuFamily {
             TONGA_XT | TONGA_PRO | FIJI_XT | FIJI_PRO | FIJI_NANO
             | CARRIZO | STONEY => GpuFamily::VolcanicIslands,
 
-            // Polaris
-            POLARIS10_XT | POLARIS10_PRO | POLARIS11_XT | POLARIS11_PRO
-            | POLARIS12 => GpuFamily::Polaris,
+            // Polaris (GCN 4.0)
+            POLARIS10_XT | POLARIS10_XT2 | POLARIS10_XT3 | POLARIS10_PRO
+            | POLARIS10_PRO2 | POLARIS10_PRO3 | POLARIS10_PRO4 | POLARIS10_D1
+            | POLARIS10_GL | POLARIS10_GL2 | POLARIS10_GL3
+            | POLARIS11_XT | POLARIS11_XT2 | POLARIS11_XT3 | POLARIS11_PRO
+            | POLARIS11_PRO2 | POLARIS11_PRO3 | POLARIS11_GL | POLARIS11_GL2
+            | POLARIS12_XT | POLARIS12_XL | POLARIS12_XL2 | POLARIS12_XL3
+            | POLARIS12_GL | POLARIS12_GL2
+            | POLARIS10_M | POLARIS10_M2 | POLARIS11_M | POLARIS11_M2
+            | POLARIS12_M | POLARIS12_M2
+            | POLARIS10_E | POLARIS11_E | POLARIS12_E => GpuFamily::Polaris,
 
-            // Vega
-            VEGA10_XT | VEGA10_XL | VEGA10_XTX | VEGA12 | VEGA20_XT | VEGA20_XL
-            | RAVEN | RAVEN2 | RENOIR => GpuFamily::Vega,
+            // Vega (GCN 5.0)
+            // Vega 10 discrete
+            VEGA10_XT | VEGA10_XT2 | VEGA10_XL | VEGA10_XL2 | VEGA10_XTX
+            | VEGA10_XTRA | VEGA10_XTRX | VEGA10_GL | VEGA10_GL2 | VEGA10_GL3
+            | VEGA10_GL4 | VEGA10_GL5 | VEGA10_SSG
+            // Vega 12 mobile
+            | VEGA12_GL | VEGA12_GL2 | VEGA12_GL3 | VEGA12_GL4 | VEGA12_XT
+            // Vega 20 (Radeon VII)
+            | VEGA20_XT | VEGA20_XT2 | VEGA20_XL | VEGA20_XL2 | VEGA20_GL | VEGA20_GL2
+            // Raven Ridge APU
+            | RAVEN | RAVEN_D1 | RAVEN_D2 | RAVEN_M | RAVEN_M2
+            // Picasso APU
+            | PICASSO | PICASSO_M | PICASSO_M2 | PICASSO_M3
+            // Renoir APU
+            | RENOIR | RENOIR_XT | RENOIR_PRO | RENOIR_PRO2 | RENOIR_M | RENOIR_M2
+            // Cezanne APU
+            | CEZANNE | CEZANNE_XT | CEZANNE_M | CEZANNE_PRO | CEZANNE_PRO2
+            // Lucienne APU
+            | LUCIENNE | LUCIENNE_M => GpuFamily::Vega,
 
-            // Navi 10 (RDNA 1)
-            NAVI10_XT | NAVI10_XL | NAVI10_XLE | NAVI14_XT | NAVI14_XTM
-            | NAVI14_XLM => GpuFamily::Navi10,
+            // Navi 10/12/14 (RDNA 1)
+            // Navi 10 desktop
+            NAVI10_XT | NAVI10_XT2 | NAVI10_XL | NAVI10_XL2 | NAVI10_XLE | NAVI10_XLE2
+            | NAVI10_GL | NAVI10_GL2 | NAVI10_GL3 | NAVI10_GL4
+            // Navi 10 mobile
+            | NAVI10_M_XT | NAVI10_M_XL | NAVI10_M_PRO
+            // Navi 14 desktop
+            | NAVI14_XT | NAVI14_XT2 | NAVI14_XL | NAVI14_GL | NAVI14_GL2 | NAVI14_GL3
+            // Navi 14 mobile
+            | NAVI14_XTM | NAVI14_XLM | NAVI14_M_XT | NAVI14_M_XL | NAVI14_M_PRO | NAVI14_M_PRO2
+            // Navi 12 (Apple)
+            | NAVI12 | NAVI12_PRO | NAVI12_GL => GpuFamily::Navi10,
 
             // Navi 2x (RDNA 2)
             NAVI21_XT | NAVI21_XTX | NAVI21_XL | NAVI21_LLXL | NAVI22_XT | NAVI22_XL
             | NAVI23_XT | NAVI23_XL | NAVI24_XT | NAVI24_XL | VAN_GOGH => GpuFamily::Navi2x,
 
-            // Navi 3x (RDNA 3)
-            NAVI31_XT | NAVI31_XL | NAVI32_XT | NAVI32_XL | NAVI33_XT
-            | PHOENIX => GpuFamily::Navi3x,
+            // Navi 3x (RDNA 3) - Discrete GPUs
+            NAVI31_XTX | NAVI31_XT | NAVI31_XL | NAVI31_PRO | NAVI31_M_XT
+            | NAVI32_XT | NAVI32_XL | NAVI32_PRO | NAVI32_M_XT | NAVI32_M_XL
+            | NAVI33_XT | NAVI33_XTX | NAVI33_XL | NAVI33_XTM | NAVI33_XLM
+            | NAVI33_PRO | NAVI33_PRO_M => GpuFamily::Navi3x,
+
+            // Phoenix / Hawk Point APUs (RDNA 3.5)
+            PHOENIX | PHOENIX2 | HAWK_POINT => GpuFamily::Phoenix,
+
+            // Strix Point APUs (RDNA 3+)
+            STRIX_POINT | STRIX_HALO => GpuFamily::StrixPoint,
 
             _ => GpuFamily::Unknown,
         }
@@ -203,14 +395,27 @@ impl GpuFamily {
             GpuFamily::Navi10 => "RDNA 1 (Navi)",
             GpuFamily::Navi2x => "RDNA 2 (Navi 2x)",
             GpuFamily::Navi3x => "RDNA 3 (Navi 3x)",
+            GpuFamily::Phoenix => "RDNA 3.5 (Phoenix/Hawk Point)",
+            GpuFamily::StrixPoint => "RDNA 3+ (Strix Point)",
             GpuFamily::Unknown => "Unknown",
         }
     }
 
     /// Check if this is an APU (integrated graphics)
     pub fn is_apu(&self) -> bool {
-        // APUs are detected by specific device IDs
-        false
+        matches!(self, GpuFamily::Vega | GpuFamily::Phoenix | GpuFamily::StrixPoint)
+    }
+
+    /// Check if this is RDNA architecture
+    pub fn is_rdna(&self) -> bool {
+        matches!(self, GpuFamily::Navi10 | GpuFamily::Navi2x | GpuFamily::Navi3x
+            | GpuFamily::Phoenix | GpuFamily::StrixPoint)
+    }
+
+    /// Check if this is GCN architecture
+    pub fn is_gcn(&self) -> bool {
+        matches!(self, GpuFamily::SouthernIslands | GpuFamily::SeaIslands
+            | GpuFamily::VolcanicIslands | GpuFamily::Polaris | GpuFamily::Vega)
     }
 
     /// Get minimum VRAM requirement
@@ -224,6 +429,8 @@ impl GpuFamily {
             GpuFamily::Navi10 => 4096 * 1024 * 1024,           // 4 GB
             GpuFamily::Navi2x => 4096 * 1024 * 1024,           // 4 GB
             GpuFamily::Navi3x => 8192 * 1024 * 1024,           // 8 GB
+            GpuFamily::Phoenix => 512 * 1024 * 1024,           // 512 MB (APU, uses system RAM)
+            GpuFamily::StrixPoint => 512 * 1024 * 1024,        // 512 MB (APU, uses system RAM)
             GpuFamily::Unknown => 256 * 1024 * 1024,           // 256 MB
         }
     }
@@ -231,7 +438,8 @@ impl GpuFamily {
     /// Uses DCN (Display Core Next) instead of DCE
     pub fn uses_dcn(&self) -> bool {
         matches!(self,
-            GpuFamily::Vega | GpuFamily::Navi10 | GpuFamily::Navi2x | GpuFamily::Navi3x)
+            GpuFamily::Vega | GpuFamily::Navi10 | GpuFamily::Navi2x | GpuFamily::Navi3x
+            | GpuFamily::Phoenix | GpuFamily::StrixPoint)
     }
 }
 
@@ -945,10 +1153,18 @@ pub fn init_from_pci(
 
     // Check if this is an APU
     gpu.is_apu = matches!(device_id,
+        // GCN APUs
         device_ids::KAVERI_1 | device_ids::KAVERI_2 | device_ids::KABINI | device_ids::MULLINS |
         device_ids::CARRIZO | device_ids::STONEY |
-        device_ids::RAVEN | device_ids::RAVEN2 | device_ids::RENOIR |
-        device_ids::VAN_GOGH | device_ids::PHOENIX
+        // Vega APUs
+        device_ids::RAVEN | device_ids::RAVEN_D1 | device_ids::RAVEN_D2 | device_ids::RAVEN_M | device_ids::RAVEN_M2 |
+        device_ids::PICASSO | device_ids::PICASSO_M | device_ids::PICASSO_M2 | device_ids::PICASSO_M3 |
+        device_ids::RENOIR | device_ids::RENOIR_XT | device_ids::RENOIR_PRO | device_ids::RENOIR_PRO2 | device_ids::RENOIR_M | device_ids::RENOIR_M2 |
+        device_ids::CEZANNE | device_ids::CEZANNE_XT | device_ids::CEZANNE_M | device_ids::CEZANNE_PRO | device_ids::CEZANNE_PRO2 |
+        device_ids::LUCIENNE | device_ids::LUCIENNE_M |
+        // RDNA APUs
+        device_ids::VAN_GOGH | device_ids::PHOENIX | device_ids::PHOENIX2 | device_ids::HAWK_POINT |
+        device_ids::STRIX_POINT | device_ids::STRIX_HALO
     );
 
     crate::kprintln!(

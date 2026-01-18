@@ -12,10 +12,13 @@
     pub mod seccomp;
     pub mod keyring;
     pub mod secureboot;
+    pub mod mok;
     pub mod tpm;
     pub mod pam;
     pub mod sandbox;
     pub mod permission;
+    pub mod measured_boot;
+    pub mod pam_fprintd;
 
     pub use caps::{ProcessCaps, CapSet, Cap, FileCaps};
     pub use seccomp::SeccompState;

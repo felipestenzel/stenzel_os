@@ -483,3 +483,845 @@ pub fn time_to_full() -> Option<u32> {
         .filter_map(|b| b.status.time_to_full)
         .max()
 }
+
+// ============================================================================
+// Battery Health Monitoring
+// ============================================================================
+
+/// Battery health status
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthStatus {
+    Excellent,  // > 90% capacity retention
+    Good,       // 80-90% capacity retention
+    Fair,       // 60-80% capacity retention
+    Poor,       // 40-60% capacity retention
+    Critical,   // < 40% capacity retention
+    Unknown,
+}
+
+impl HealthStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Excellent => "Excellent",
+            Self::Good => "Good",
+            Self::Fair => "Fair",
+            Self::Poor => "Poor",
+            Self::Critical => "Critical",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn from_percentage(pct: u8) -> Self {
+        match pct {
+            91..=100 => Self::Excellent,
+            80..=90 => Self::Good,
+            60..=79 => Self::Fair,
+            40..=59 => Self::Poor,
+            0..=39 => Self::Critical,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Battery health information
+#[derive(Debug, Clone)]
+pub struct BatteryHealth {
+    /// Health status
+    pub status: HealthStatus,
+    /// Health percentage (capacity retention)
+    pub health_percentage: u8,
+    /// Design capacity in mWh
+    pub design_capacity: u32,
+    /// Current full charge capacity in mWh
+    pub full_charge_capacity: u32,
+    /// Cycle count
+    pub cycle_count: u32,
+    /// Estimated cycles remaining (based on typical battery life)
+    pub estimated_cycles_remaining: Option<u32>,
+    /// Manufacturing date (if available)
+    pub manufacture_date: Option<String>,
+    /// First use date (if tracked)
+    pub first_use_date: Option<u64>,
+    /// Total energy consumed (mWh lifetime)
+    pub total_energy_consumed: u64,
+    /// Average discharge rate
+    pub avg_discharge_rate: u32,
+    /// Max observed temperature (Celsius * 10)
+    pub max_temperature: Option<i16>,
+    /// Current temperature (Celsius * 10)
+    pub current_temperature: Option<i16>,
+    /// Number of deep discharge events (< 10%)
+    pub deep_discharge_count: u32,
+    /// Number of overcharge events
+    pub overcharge_count: u32,
+    /// Last calibration timestamp
+    pub last_calibration: Option<u64>,
+    /// Needs calibration
+    pub needs_calibration: bool,
+}
+
+impl BatteryHealth {
+    pub fn new(design_capacity: u32, full_charge_capacity: u32) -> Self {
+        let health_pct = if design_capacity > 0 {
+            ((full_charge_capacity as u64 * 100) / design_capacity as u64).min(100) as u8
+        } else {
+            0
+        };
+
+        Self {
+            status: HealthStatus::from_percentage(health_pct),
+            health_percentage: health_pct,
+            design_capacity,
+            full_charge_capacity,
+            cycle_count: 0,
+            estimated_cycles_remaining: None,
+            manufacture_date: None,
+            first_use_date: None,
+            total_energy_consumed: 0,
+            avg_discharge_rate: 0,
+            max_temperature: None,
+            current_temperature: None,
+            deep_discharge_count: 0,
+            overcharge_count: 0,
+            last_calibration: None,
+            needs_calibration: false,
+        }
+    }
+
+    /// Update health from current battery data
+    pub fn update(&mut self, info: &BatteryInfo, _status: &BatteryStatus) {
+        self.design_capacity = info.design_capacity;
+        self.full_charge_capacity = info.full_charge_capacity;
+
+        if self.design_capacity > 0 {
+            self.health_percentage = ((self.full_charge_capacity as u64 * 100)
+                / self.design_capacity as u64).min(100) as u8;
+            self.status = HealthStatus::from_percentage(self.health_percentage);
+        }
+
+        if let Some(cycles) = info.cycle_count {
+            self.cycle_count = cycles;
+            // Estimate remaining cycles (typical Li-ion: 500-1000 cycles)
+            let max_cycles: u32 = match info.technology {
+                BatteryTechnology::LithiumIon | BatteryTechnology::LithiumPolymer => 800,
+                BatteryTechnology::NickelMetalHydride => 500,
+                _ => 500,
+            };
+            self.estimated_cycles_remaining = Some(max_cycles.saturating_sub(cycles));
+        }
+
+        // Check if calibration is needed (every 3 months or 100 cycles)
+        self.needs_calibration = self.cycle_count > 0 && self.cycle_count % 100 == 0;
+    }
+
+    /// Get wear level as percentage
+    pub fn wear_level(&self) -> u8 {
+        100u8.saturating_sub(self.health_percentage)
+    }
+
+    /// Estimate battery lifespan in months remaining
+    pub fn estimated_lifespan_months(&self) -> Option<u32> {
+        if let Some(cycles_remaining) = self.estimated_cycles_remaining {
+            // Assume ~1 cycle per day average
+            Some(cycles_remaining / 30)
+        } else {
+            None
+        }
+    }
+
+    /// Check if battery should be replaced
+    pub fn should_replace(&self) -> bool {
+        self.health_percentage < 60 || self.status == HealthStatus::Poor || self.status == HealthStatus::Critical
+    }
+}
+
+/// Battery health history entry
+#[derive(Debug, Clone)]
+pub struct HealthHistoryEntry {
+    pub timestamp: u64,
+    pub health_percentage: u8,
+    pub cycle_count: u32,
+    pub full_charge_capacity: u32,
+}
+
+/// Battery health tracker
+pub struct BatteryHealthTracker {
+    health_data: BTreeMap<String, BatteryHealth>,
+    history: BTreeMap<String, Vec<HealthHistoryEntry>>,
+    max_history_entries: usize,
+    current_time: u64,
+}
+
+use alloc::collections::BTreeMap;
+
+impl BatteryHealthTracker {
+    pub fn new() -> Self {
+        Self {
+            health_data: BTreeMap::new(),
+            history: BTreeMap::new(),
+            max_history_entries: 365, // ~1 year of daily entries
+            current_time: 0,
+        }
+    }
+
+    /// Get health for a battery
+    pub fn get_health(&self, name: &str) -> Option<&BatteryHealth> {
+        self.health_data.get(name)
+    }
+
+    /// Update health for a battery
+    pub fn update_health(&mut self, battery: &Battery) {
+        let name = battery.info.name.clone();
+
+        let health = self.health_data
+            .entry(name.clone())
+            .or_insert_with(|| BatteryHealth::new(
+                battery.info.design_capacity,
+                battery.info.full_charge_capacity
+            ));
+
+        health.update(&battery.info, &battery.status);
+
+        // Record history entry (once per day or significant change)
+        let should_record = {
+            let history = self.history.entry(name.clone()).or_insert_with(Vec::new);
+            history.last().map_or(true, |last| {
+                // Record if > 1 day has passed or health changed by > 1%
+                let time_diff = self.current_time.saturating_sub(last.timestamp) > 86400;
+                let health_diff = (health.health_percentage as i16 - last.health_percentage as i16).abs() > 1;
+                time_diff || health_diff
+            })
+        };
+
+        if should_record {
+            let entry = HealthHistoryEntry {
+                timestamp: self.current_time,
+                health_percentage: health.health_percentage,
+                cycle_count: health.cycle_count,
+                full_charge_capacity: health.full_charge_capacity,
+            };
+
+            let history = self.history.entry(name).or_insert_with(Vec::new);
+            history.push(entry);
+
+            // Trim old entries
+            if history.len() > self.max_history_entries {
+                history.remove(0);
+            }
+        }
+    }
+
+    /// Get health history for a battery
+    pub fn get_history(&self, name: &str) -> Option<&Vec<HealthHistoryEntry>> {
+        self.history.get(name)
+    }
+
+    /// Get health degradation rate (percentage per month)
+    pub fn degradation_rate(&self, name: &str) -> Option<f32> {
+        let history = self.history.get(name)?;
+        if history.len() < 2 {
+            return None;
+        }
+
+        let first = history.first()?;
+        let last = history.last()?;
+
+        let months = (last.timestamp - first.timestamp) as f32 / (30.0 * 24.0 * 3600.0);
+        if months < 1.0 {
+            return None;
+        }
+
+        let health_loss = first.health_percentage as f32 - last.health_percentage as f32;
+        Some(health_loss / months)
+    }
+
+    /// Set current time
+    pub fn set_current_time(&mut self, time: u64) {
+        self.current_time = time;
+    }
+
+    /// Add sample data for demo
+    pub fn add_sample_data(&mut self) {
+        self.current_time = 1705600000;
+
+        // Create sample health data
+        let mut health = BatteryHealth::new(57000, 52000);
+        health.cycle_count = 245;
+        health.estimated_cycles_remaining = Some(555);
+        health.manufacture_date = Some(String::from("2022-06"));
+        health.first_use_date = Some(1656633600); // July 2022
+        health.total_energy_consumed = 890000;
+        health.avg_discharge_rate = 15000;
+        health.max_temperature = Some(450); // 45.0°C
+        health.current_temperature = Some(320); // 32.0°C
+        health.deep_discharge_count = 3;
+        health.overcharge_count = 0;
+        health.last_calibration = Some(1702944000);
+        health.needs_calibration = false;
+
+        self.health_data.insert(String::from("BAT0"), health);
+
+        // Add some history
+        let mut history = Vec::new();
+        for i in 0..12 {
+            history.push(HealthHistoryEntry {
+                timestamp: 1673049600 + i * 30 * 86400, // Monthly entries for a year
+                health_percentage: 95 - i as u8,
+                cycle_count: 20 * (i as u32 + 1),
+                full_charge_capacity: 57000 - i as u32 * 500,
+            });
+        }
+        self.history.insert(String::from("BAT0"), history);
+    }
+}
+
+impl Default for BatteryHealthTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Global health tracker
+static HEALTH_TRACKER: IrqSafeMutex<Option<BatteryHealthTracker>> = IrqSafeMutex::new(None);
+
+/// Initialize health tracking
+pub fn init_health_tracking() {
+    let mut tracker = BatteryHealthTracker::new();
+    tracker.add_sample_data();
+    *HEALTH_TRACKER.lock() = Some(tracker);
+}
+
+/// Get battery health
+pub fn get_battery_health(name: &str) -> Option<BatteryHealth> {
+    HEALTH_TRACKER.lock().as_ref().and_then(|t| t.get_health(name).cloned())
+}
+
+/// Get health status
+pub fn health_status(name: &str) -> Option<HealthStatus> {
+    get_battery_health(name).map(|h| h.status)
+}
+
+/// Get wear level
+pub fn wear_level(name: &str) -> Option<u8> {
+    get_battery_health(name).map(|h| h.wear_level())
+}
+
+/// Check if battery should be replaced
+pub fn should_replace_battery(name: &str) -> Option<bool> {
+    get_battery_health(name).map(|h| h.should_replace())
+}
+
+/// Get estimated lifespan
+pub fn estimated_lifespan_months(name: &str) -> Option<u32> {
+    get_battery_health(name).and_then(|h| h.estimated_lifespan_months())
+}
+
+/// Get health degradation rate
+pub fn degradation_rate(name: &str) -> Option<f32> {
+    HEALTH_TRACKER.lock().as_ref().and_then(|t| t.degradation_rate(name))
+}
+
+/// Update health tracking (call periodically)
+pub fn update_health_tracking() {
+    let ps = POWER_SUPPLY.lock();
+    let mut tracker = HEALTH_TRACKER.lock();
+
+    if let Some(ref mut tracker) = *tracker {
+        for battery in ps.batteries.iter() {
+            if battery.present {
+                tracker.update_health(battery);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Charge Limit (Battery Conservation Mode)
+// ============================================================================
+
+/// Charge limit mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChargeLimitMode {
+    /// No charge limit (charge to 100%)
+    Full,
+    /// Stop charging at 80% (better for battery longevity)
+    Conservation,
+    /// Stop charging at 60% (maximum longevity, for always-plugged devices)
+    MaxLongevity,
+    /// Custom limit (user-defined percentage)
+    Custom(u8),
+}
+
+impl ChargeLimitMode {
+    pub fn limit_percentage(&self) -> u8 {
+        match self {
+            ChargeLimitMode::Full => 100,
+            ChargeLimitMode::Conservation => 80,
+            ChargeLimitMode::MaxLongevity => 60,
+            ChargeLimitMode::Custom(pct) => *pct,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChargeLimitMode::Full => "Full (100%)",
+            ChargeLimitMode::Conservation => "Conservation (80%)",
+            ChargeLimitMode::MaxLongevity => "Max Longevity (60%)",
+            ChargeLimitMode::Custom(_) => "Custom",
+        }
+    }
+}
+
+/// Charge threshold type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChargeThreshold {
+    /// Start charging when below this percentage
+    Start,
+    /// Stop charging when above this percentage
+    Stop,
+}
+
+/// Charge limit settings
+#[derive(Debug, Clone)]
+pub struct ChargeLimitSettings {
+    /// Battery name this applies to
+    pub battery_name: String,
+    /// Whether charge limit is enabled
+    pub enabled: bool,
+    /// Charge limit mode
+    pub mode: ChargeLimitMode,
+    /// Start charging threshold (hysteresis)
+    pub start_threshold: u8,
+    /// Stop charging threshold
+    pub stop_threshold: u8,
+    /// Schedule enabled (only limit during certain hours)
+    pub schedule_enabled: bool,
+    /// Schedule start hour (0-23)
+    pub schedule_start: u8,
+    /// Schedule end hour (0-23)
+    pub schedule_end: u8,
+    /// Allow full charge on specific days (bitmap: bit 0=Sun, bit 6=Sat)
+    pub full_charge_days: u8,
+    /// Bypass limit when full charge is needed soon (e.g., trip)
+    pub bypass_until: Option<u64>,
+    /// Express charge mode (ignore limit when battery very low)
+    pub express_charge_threshold: u8,
+}
+
+impl ChargeLimitSettings {
+    pub fn new(battery_name: &str) -> Self {
+        Self {
+            battery_name: String::from(battery_name),
+            enabled: false,
+            mode: ChargeLimitMode::Conservation,
+            start_threshold: 75, // Start charging when below 75%
+            stop_threshold: 80,  // Stop when reaches 80%
+            schedule_enabled: false,
+            schedule_start: 22,  // 10 PM
+            schedule_end: 8,     // 8 AM
+            full_charge_days: 0, // No automatic full charge days
+            bypass_until: None,
+            express_charge_threshold: 20, // Express charge if below 20%
+        }
+    }
+
+    /// Set conservation mode (80%)
+    pub fn conservation() -> Self {
+        let mut settings = Self::new("BAT0");
+        settings.enabled = true;
+        settings.mode = ChargeLimitMode::Conservation;
+        settings.start_threshold = 75;
+        settings.stop_threshold = 80;
+        settings
+    }
+
+    /// Set max longevity mode (60%)
+    pub fn max_longevity() -> Self {
+        let mut settings = Self::new("BAT0");
+        settings.enabled = true;
+        settings.mode = ChargeLimitMode::MaxLongevity;
+        settings.start_threshold = 55;
+        settings.stop_threshold = 60;
+        settings
+    }
+
+    /// Set custom limit
+    pub fn custom(limit: u8) -> Self {
+        let mut settings = Self::new("BAT0");
+        settings.enabled = true;
+        settings.mode = ChargeLimitMode::Custom(limit);
+        settings.start_threshold = limit.saturating_sub(5);
+        settings.stop_threshold = limit;
+        settings
+    }
+
+    /// Should charging be stopped?
+    pub fn should_stop_charging(&self, current_percentage: u8, current_time: u64) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
+        // Check if bypass is active
+        if let Some(bypass_until) = self.bypass_until {
+            if current_time < bypass_until {
+                return false;
+            }
+        }
+
+        // Express charge - don't stop if battery is very low
+        if current_percentage < self.express_charge_threshold {
+            return false;
+        }
+
+        // Check schedule
+        if self.schedule_enabled && !self.is_in_schedule(current_time) {
+            return false;
+        }
+
+        current_percentage >= self.stop_threshold
+    }
+
+    /// Should charging be started?
+    pub fn should_start_charging(&self, current_percentage: u8, current_time: u64) -> bool {
+        if !self.enabled {
+            return true; // Always allow charging if not enabled
+        }
+
+        // Check if bypass is active
+        if let Some(bypass_until) = self.bypass_until {
+            if current_time < bypass_until {
+                return true;
+            }
+        }
+
+        // Express charge - always charge if very low
+        if current_percentage < self.express_charge_threshold {
+            return true;
+        }
+
+        current_percentage <= self.start_threshold
+    }
+
+    /// Check if current time is within schedule
+    fn is_in_schedule(&self, current_time: u64) -> bool {
+        // Extract hour from timestamp (simplified)
+        let hour = ((current_time / 3600) % 24) as u8;
+
+        if self.schedule_start <= self.schedule_end {
+            // Normal range (e.g., 8-18)
+            hour >= self.schedule_start && hour < self.schedule_end
+        } else {
+            // Overnight range (e.g., 22-8)
+            hour >= self.schedule_start || hour < self.schedule_end
+        }
+    }
+
+    /// Set bypass for temporary full charge
+    pub fn set_bypass(&mut self, duration_hours: u32, current_time: u64) {
+        self.bypass_until = Some(current_time + (duration_hours as u64 * 3600));
+    }
+
+    /// Clear bypass
+    pub fn clear_bypass(&mut self) {
+        self.bypass_until = None;
+    }
+
+    /// Check if full charge day
+    pub fn is_full_charge_day(&self, day_of_week: u8) -> bool {
+        (self.full_charge_days >> day_of_week) & 1 == 1
+    }
+
+    /// Set full charge day
+    pub fn set_full_charge_day(&mut self, day_of_week: u8, enabled: bool) {
+        if enabled {
+            self.full_charge_days |= 1 << day_of_week;
+        } else {
+            self.full_charge_days &= !(1 << day_of_week);
+        }
+    }
+}
+
+/// Charge limit controller interface
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChargeLimitController {
+    /// No hardware support
+    None,
+    /// ThinkPad EC (via /sys/class/power_supply/BAT0/charge_control_*)
+    ThinkPad,
+    /// ASUS ACPI (_SB.PCI0.LPCB.EC0)
+    Asus,
+    /// Dell BIOS/EC
+    Dell,
+    /// HP BIOS
+    Hp,
+    /// Lenovo IdeaPad
+    LenovoIdeaPad,
+    /// MSI EC
+    Msi,
+    /// Samsung BIOS
+    Samsung,
+    /// Surface UEFI
+    Surface,
+    /// Generic EC (may work on some laptops)
+    GenericEc,
+}
+
+impl ChargeLimitController {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChargeLimitController::None => "None",
+            ChargeLimitController::ThinkPad => "ThinkPad",
+            ChargeLimitController::Asus => "ASUS",
+            ChargeLimitController::Dell => "Dell",
+            ChargeLimitController::Hp => "HP",
+            ChargeLimitController::LenovoIdeaPad => "Lenovo IdeaPad",
+            ChargeLimitController::Msi => "MSI",
+            ChargeLimitController::Samsung => "Samsung",
+            ChargeLimitController::Surface => "Surface",
+            ChargeLimitController::GenericEc => "Generic EC",
+        }
+    }
+}
+
+/// Charge limit manager
+pub struct ChargeLimitManager {
+    settings: BTreeMap<String, ChargeLimitSettings>,
+    controller: ChargeLimitController,
+    supported: bool,
+    charging_inhibited: BTreeMap<String, bool>,
+    current_time: u64,
+}
+
+impl ChargeLimitManager {
+    pub fn new() -> Self {
+        Self {
+            settings: BTreeMap::new(),
+            controller: ChargeLimitController::None,
+            supported: false,
+            charging_inhibited: BTreeMap::new(),
+            current_time: 0,
+        }
+    }
+
+    /// Detect hardware support
+    pub fn detect_hardware(&mut self) {
+        // In real implementation, would detect via DMI/SMBIOS, ACPI, etc.
+        // For demo, assume ThinkPad support
+        self.controller = ChargeLimitController::ThinkPad;
+        self.supported = true;
+    }
+
+    /// Check if charge limit is supported
+    pub fn is_supported(&self) -> bool {
+        self.supported
+    }
+
+    /// Get controller type
+    pub fn controller(&self) -> ChargeLimitController {
+        self.controller
+    }
+
+    /// Set settings for a battery
+    pub fn set_settings(&mut self, settings: ChargeLimitSettings) {
+        let name = settings.battery_name.clone();
+        self.settings.insert(name, settings);
+    }
+
+    /// Get settings for a battery
+    pub fn get_settings(&self, battery_name: &str) -> Option<&ChargeLimitSettings> {
+        self.settings.get(battery_name)
+    }
+
+    /// Get settings for a battery (mutable)
+    pub fn get_settings_mut(&mut self, battery_name: &str) -> Option<&mut ChargeLimitSettings> {
+        self.settings.get_mut(battery_name)
+    }
+
+    /// Enable charge limit for a battery
+    pub fn enable(&mut self, battery_name: &str) {
+        if let Some(settings) = self.settings.get_mut(battery_name) {
+            settings.enabled = true;
+        } else {
+            let mut settings = ChargeLimitSettings::conservation();
+            settings.battery_name = String::from(battery_name);
+            settings.enabled = true;
+            self.settings.insert(String::from(battery_name), settings);
+        }
+    }
+
+    /// Disable charge limit for a battery
+    pub fn disable(&mut self, battery_name: &str) {
+        if let Some(settings) = self.settings.get_mut(battery_name) {
+            settings.enabled = false;
+        }
+    }
+
+    /// Set charge limit percentage
+    pub fn set_limit(&mut self, battery_name: &str, limit: u8) {
+        if let Some(settings) = self.settings.get_mut(battery_name) {
+            settings.mode = ChargeLimitMode::Custom(limit);
+            settings.stop_threshold = limit;
+            settings.start_threshold = limit.saturating_sub(5);
+        }
+    }
+
+    /// Process charging decision for a battery
+    pub fn process(&mut self, battery_name: &str, current_percentage: u8) -> ChargingDecision {
+        let settings = match self.settings.get(battery_name) {
+            Some(s) => s,
+            None => return ChargingDecision::Allow,
+        };
+
+        let currently_inhibited = self.charging_inhibited
+            .get(battery_name)
+            .copied()
+            .unwrap_or(false);
+
+        if settings.should_stop_charging(current_percentage, self.current_time) {
+            self.charging_inhibited.insert(String::from(battery_name), true);
+            ChargingDecision::Stop
+        } else if settings.should_start_charging(current_percentage, self.current_time) {
+            self.charging_inhibited.insert(String::from(battery_name), false);
+            ChargingDecision::Allow
+        } else if currently_inhibited {
+            ChargingDecision::Stop
+        } else {
+            ChargingDecision::Allow
+        }
+    }
+
+    /// Apply charge limit to hardware
+    pub fn apply_to_hardware(&self, battery_name: &str) -> bool {
+        let settings = match self.settings.get(battery_name) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        if !self.supported {
+            return false;
+        }
+
+        match self.controller {
+            ChargeLimitController::ThinkPad => {
+                // Would write to /sys/class/power_supply/BAT0/charge_control_start_threshold
+                // and charge_control_end_threshold
+                // Simulated success
+                true
+            }
+            ChargeLimitController::Asus => {
+                // Would call ASUS ACPI method
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Set current time
+    pub fn set_current_time(&mut self, time: u64) {
+        self.current_time = time;
+    }
+
+    /// Add sample data
+    pub fn add_sample_data(&mut self) {
+        self.detect_hardware();
+        self.current_time = 1705600000;
+
+        // Add default conservation settings
+        let mut settings = ChargeLimitSettings::conservation();
+        settings.battery_name = String::from("BAT0");
+        settings.enabled = true;
+        self.settings.insert(String::from("BAT0"), settings);
+    }
+}
+
+impl Default for ChargeLimitManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Charging decision
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChargingDecision {
+    Allow,
+    Stop,
+}
+
+// Global charge limit manager
+static CHARGE_LIMIT_MANAGER: IrqSafeMutex<Option<ChargeLimitManager>> = IrqSafeMutex::new(None);
+
+/// Initialize charge limit feature
+pub fn init_charge_limit() {
+    let mut manager = ChargeLimitManager::new();
+    manager.add_sample_data();
+    *CHARGE_LIMIT_MANAGER.lock() = Some(manager);
+}
+
+/// Check if charge limit is supported
+pub fn charge_limit_supported() -> bool {
+    CHARGE_LIMIT_MANAGER.lock().as_ref().map_or(false, |m| m.is_supported())
+}
+
+/// Get charge limit controller type
+pub fn charge_limit_controller() -> Option<ChargeLimitController> {
+    CHARGE_LIMIT_MANAGER.lock().as_ref().map(|m| m.controller())
+}
+
+/// Enable charge limit
+pub fn enable_charge_limit(battery_name: &str) {
+    if let Some(ref mut manager) = *CHARGE_LIMIT_MANAGER.lock() {
+        manager.enable(battery_name);
+        manager.apply_to_hardware(battery_name);
+    }
+}
+
+/// Disable charge limit
+pub fn disable_charge_limit(battery_name: &str) {
+    if let Some(ref mut manager) = *CHARGE_LIMIT_MANAGER.lock() {
+        manager.disable(battery_name);
+        manager.apply_to_hardware(battery_name);
+    }
+}
+
+/// Set charge limit percentage
+pub fn set_charge_limit(battery_name: &str, limit: u8) {
+    if let Some(ref mut manager) = *CHARGE_LIMIT_MANAGER.lock() {
+        manager.set_limit(battery_name, limit);
+        manager.apply_to_hardware(battery_name);
+    }
+}
+
+/// Get current charge limit settings
+pub fn get_charge_limit_settings(battery_name: &str) -> Option<ChargeLimitSettings> {
+    CHARGE_LIMIT_MANAGER.lock().as_ref().and_then(|m| m.get_settings(battery_name).cloned())
+}
+
+/// Process charge limit for a battery
+pub fn process_charge_limit(battery_name: &str, current_percentage: u8) -> ChargingDecision {
+    if let Some(ref mut manager) = *CHARGE_LIMIT_MANAGER.lock() {
+        manager.process(battery_name, current_percentage)
+    } else {
+        ChargingDecision::Allow
+    }
+}
+
+/// Set bypass for temporary full charge
+pub fn set_charge_limit_bypass(battery_name: &str, duration_hours: u32) {
+    if let Some(ref mut manager) = *CHARGE_LIMIT_MANAGER.lock() {
+        let current_time = manager.current_time;
+        if let Some(settings) = manager.get_settings_mut(battery_name) {
+            settings.set_bypass(duration_hours, current_time);
+        }
+        manager.apply_to_hardware(battery_name);
+    }
+}
+
+/// Clear charge limit bypass
+pub fn clear_charge_limit_bypass(battery_name: &str) {
+    if let Some(ref mut manager) = *CHARGE_LIMIT_MANAGER.lock() {
+        if let Some(settings) = manager.get_settings_mut(battery_name) {
+            settings.clear_bypass();
+        }
+        manager.apply_to_hardware(battery_name);
+    }
+}

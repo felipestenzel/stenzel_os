@@ -15,6 +15,7 @@ pub mod ehci;
 pub mod hid;
 pub mod hub;
 pub mod ohci;
+pub mod power;
 pub mod storage;
 pub mod uhci;
 pub mod video;
@@ -298,6 +299,8 @@ pub fn init() {
     crate::kprintln!("usb: inicializando...");
     // Initialize device manager first
     devices::init();
+    // Initialize power management
+    power::init();
     // Initialize EHCI first (USB 2.0)
     ehci::init();
     // Then xHCI (USB 3.x)

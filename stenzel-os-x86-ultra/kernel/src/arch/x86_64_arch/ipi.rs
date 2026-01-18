@@ -366,6 +366,13 @@ pub fn stop_cpu(cpu_id: u8) {
     apic::send_ipi(cpu_id, IPI_STOP);
 }
 
+/// Wake a specific CPU (send NMI to wake from halt/sleep)
+pub fn wake_cpu(cpu_id: u8) {
+    // Send a reschedule IPI to wake the CPU
+    // This will cause the CPU to exit from HLT instruction
+    apic::send_ipi(cpu_id, IPI_RESCHEDULE);
+}
+
 /// Stop all other CPUs (emergency stop)
 pub fn stop_all_cpus() {
     STOP_ALL_CPUS.store(true, Ordering::Release);

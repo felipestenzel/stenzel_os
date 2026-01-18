@@ -14,6 +14,7 @@ extern crate alloc;
 pub mod suspend;
 pub mod cpufreq;
 pub mod profiles;
+pub mod resume_speed;
 
 use alloc::string::String;
 use alloc::vec::Vec;

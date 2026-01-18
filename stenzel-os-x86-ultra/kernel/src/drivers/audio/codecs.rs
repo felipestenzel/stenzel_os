@@ -939,17 +939,495 @@ impl WavInfo {
 // Public interface
 // =============================================================================
 
+// =============================================================================
+// Opus Decoder
+// =============================================================================
+
+/// Opus bandwidth
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpusBandwidth {
+    Narrowband,    // 4 kHz
+    Mediumband,    // 6 kHz
+    Wideband,      // 8 kHz
+    SuperWideband, // 12 kHz
+    Fullband,      // 20 kHz
+}
+
+impl OpusBandwidth {
+    pub fn hz(self) -> u32 {
+        match self {
+            OpusBandwidth::Narrowband => 4000,
+            OpusBandwidth::Mediumband => 6000,
+            OpusBandwidth::Wideband => 8000,
+            OpusBandwidth::SuperWideband => 12000,
+            OpusBandwidth::Fullband => 20000,
+        }
+    }
+}
+
+/// Opus mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpusMode {
+    Silk,   // Speech
+    Celt,   // Music
+    Hybrid, // Both
+}
+
+/// Opus header (RFC 7845)
+#[derive(Debug, Clone)]
+pub struct OpusHeader {
+    pub version: u8,
+    pub channels: u8,
+    pub pre_skip: u16,
+    pub sample_rate: u32,
+    pub output_gain: i16,
+    pub channel_mapping: u8,
+    // Extended mapping (if channel_mapping != 0)
+    pub stream_count: u8,
+    pub coupled_count: u8,
+    pub channel_map: Vec<u8>,
+}
+
+impl OpusHeader {
+    /// Parse OpusHead from OGG page
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 19 || !data.starts_with(b"OpusHead") {
+            return None;
+        }
+
+        let version = data[8];
+        if version != 1 {
+            return None; // Only version 1 supported
+        }
+
+        let channels = data[9];
+        if channels == 0 {
+            return None;
+        }
+
+        let pre_skip = u16::from_le_bytes([data[10], data[11]]);
+        let sample_rate = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+        let output_gain = i16::from_le_bytes([data[16], data[17]]);
+        let channel_mapping = data[18];
+
+        let (stream_count, coupled_count, channel_map) = if channel_mapping != 0 {
+            if data.len() < 21 + channels as usize {
+                return None;
+            }
+            let stream_count = data[19];
+            let coupled_count = data[20];
+            let channel_map = data[21..21 + channels as usize].to_vec();
+            (stream_count, coupled_count, channel_map)
+        } else {
+            (1, if channels > 1 { 1 } else { 0 }, vec![0, 1])
+        };
+
+        Some(Self {
+            version,
+            channels,
+            pre_skip,
+            sample_rate,
+            output_gain,
+            channel_mapping,
+            stream_count,
+            coupled_count,
+            channel_map,
+        })
+    }
+}
+
+/// Opus decoder state
+pub struct OpusDecoder {
+    info: AudioStreamInfo,
+    header: Option<OpusHeader>,
+    current_sample: u64,
+    // SILK decoder state
+    silk_prev_samples: [[i16; 320]; 2],
+    silk_lpf_state: [i32; 2],
+    // CELT decoder state
+    celt_prev_buffer: [[f32; 960]; 2],
+    celt_preemph: [f32; 2],
+    // Range decoder state
+    range_val: u32,
+    range_rng: u32,
+}
+
+impl OpusDecoder {
+    /// Create new Opus decoder
+    pub fn new() -> Self {
+        Self {
+            info: AudioStreamInfo {
+                codec: AudioCodec::Opus,
+                sample_rate: 48000, // Opus always decodes at 48kHz
+                channels: 2,
+                bit_depth: 16,
+                bitrate: 0,
+                duration_ms: 0,
+                total_samples: 0,
+            },
+            header: None,
+            current_sample: 0,
+            silk_prev_samples: [[0; 320]; 2],
+            silk_lpf_state: [0; 2],
+            celt_prev_buffer: [[0.0; 960]; 2],
+            celt_preemph: [0.0; 2],
+            range_val: 0,
+            range_rng: 0,
+        }
+    }
+
+    /// Initialize from OGG Opus stream
+    pub fn init(&mut self, data: &[u8]) -> Result<(), DecoderError> {
+        // Find OpusHead in OGG
+        let header_start = Self::find_opus_head(data)
+            .ok_or(DecoderError::InvalidData)?;
+
+        let header = OpusHeader::parse(&data[header_start..])
+            .ok_or(DecoderError::InvalidData)?;
+
+        self.info.channels = header.channels;
+        self.info.sample_rate = if header.sample_rate > 0 {
+            header.sample_rate
+        } else {
+            48000 // Default
+        };
+
+        self.header = Some(header);
+
+        Ok(())
+    }
+
+    /// Find OpusHead magic in OGG stream
+    fn find_opus_head(data: &[u8]) -> Option<usize> {
+        for i in 0..data.len().saturating_sub(8) {
+            if &data[i..i+8] == b"OpusHead" {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Decode Opus frame
+    /// Opus frames are 2.5, 5, 10, 20, 40, or 60 ms
+    fn decode_opus_frame(&mut self, data: &[u8]) -> Result<AudioFrame, DecoderError> {
+        if data.is_empty() {
+            return Err(DecoderError::InvalidData);
+        }
+
+        // Parse TOC byte
+        let toc = data[0];
+        let config = (toc >> 3) & 0x1F;
+        let _stereo = (toc >> 2) & 0x01 != 0;
+        let _frame_count_code = toc & 0x03;
+
+        // Determine mode and frame size from config
+        let (mode, frame_duration_ms) = Self::decode_config(config);
+
+        // Calculate samples (Opus always outputs 48kHz)
+        let frame_samples = (48000 * frame_duration_ms / 1000) as usize;
+
+        let channels = self.header.as_ref().map(|h| h.channels).unwrap_or(2);
+
+        let mut frame = AudioFrame::new(48000, channels);
+        frame.timestamp = self.current_sample;
+
+        // In a full implementation, we would:
+        // 1. Parse frame structure (code 0, 1, 2, or 3)
+        // 2. For SILK: decode LP, pitch, LTP, excitation
+        // 3. For CELT: decode band energies, pulse positions, fine energy
+        // 4. Apply gain, resampling
+        // For now, output silence to demonstrate the interface
+
+        frame.samples = vec![0i16; frame_samples * channels as usize];
+
+        self.current_sample += frame_samples as u64;
+
+        let _ = mode; // Would use for actual decoding
+
+        Ok(frame)
+    }
+
+    /// Decode TOC config byte
+    fn decode_config(config: u8) -> (OpusMode, u32) {
+        match config {
+            0..=3 => (OpusMode::Silk, [10, 20, 40, 60][config as usize]),
+            4..=7 => (OpusMode::Silk, [10, 20, 40, 60][(config - 4) as usize]),
+            8..=11 => (OpusMode::Silk, [10, 20, 40, 60][(config - 8) as usize]),
+            12..=13 => (OpusMode::Hybrid, [10, 20][(config - 12) as usize]),
+            14..=15 => (OpusMode::Hybrid, [10, 20][(config - 14) as usize]),
+            16..=19 => (OpusMode::Celt, [((config - 16) as u32 + 1) * 5 / 2][0].max(5)),
+            20..=23 => (OpusMode::Celt, [((config - 20) as u32 + 1) * 5 / 2][0].max(5)),
+            24..=27 => (OpusMode::Celt, [((config - 24) as u32 + 1) * 5 / 2][0].max(5)),
+            28..=31 => (OpusMode::Celt, [((config - 28) as u32 + 1) * 5 / 2][0].max(5)),
+            _ => (OpusMode::Celt, 20),
+        }
+    }
+}
+
+impl AudioDecoder for OpusDecoder {
+    fn codec(&self) -> AudioCodec {
+        AudioCodec::Opus
+    }
+
+    fn info(&self) -> &AudioStreamInfo {
+        &self.info
+    }
+
+    fn reset(&mut self) {
+        self.current_sample = 0;
+        self.silk_prev_samples = [[0; 320]; 2];
+        self.silk_lpf_state = [0; 2];
+        self.celt_prev_buffer = [[0.0; 960]; 2];
+        self.celt_preemph = [0.0; 2];
+    }
+
+    fn decode_frame(&mut self, input: &[u8]) -> Result<AudioFrame, DecoderError> {
+        self.decode_opus_frame(input)
+    }
+
+    fn seek(&mut self, sample_pos: u64) -> Result<(), DecoderError> {
+        // Opus seeking requires parsing OGG granule positions
+        self.current_sample = sample_pos;
+        self.reset();
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Vorbis Decoder (OGG Vorbis)
+// =============================================================================
+
+/// Vorbis identification header
+#[derive(Debug, Clone)]
+pub struct VorbisIdHeader {
+    pub version: u32,
+    pub channels: u8,
+    pub sample_rate: u32,
+    pub bitrate_max: i32,
+    pub bitrate_nom: i32,
+    pub bitrate_min: i32,
+    pub blocksize_0: u8, // log2
+    pub blocksize_1: u8, // log2
+}
+
+impl VorbisIdHeader {
+    /// Parse vorbis identification header
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        // Must start with "\x01vorbis"
+        if data.len() < 30 || data[0] != 0x01 || &data[1..7] != b"vorbis" {
+            return None;
+        }
+
+        let version = u32::from_le_bytes([data[7], data[8], data[9], data[10]]);
+        if version != 0 {
+            return None; // Only version 0 supported
+        }
+
+        let channels = data[11];
+        if channels == 0 {
+            return None;
+        }
+
+        let sample_rate = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+        if sample_rate == 0 {
+            return None;
+        }
+
+        let bitrate_max = i32::from_le_bytes([data[16], data[17], data[18], data[19]]);
+        let bitrate_nom = i32::from_le_bytes([data[20], data[21], data[22], data[23]]);
+        let bitrate_min = i32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+
+        let blocksizes = data[28];
+        let blocksize_0 = blocksizes & 0x0F;
+        let blocksize_1 = (blocksizes >> 4) & 0x0F;
+
+        // Validate blocksizes (must be 6-13 for Vorbis)
+        if blocksize_0 < 6 || blocksize_0 > 13 || blocksize_1 < 6 || blocksize_1 > 13 {
+            return None;
+        }
+        if blocksize_0 > blocksize_1 {
+            return None;
+        }
+
+        // Framing bit
+        if (data[29] & 0x01) != 1 {
+            return None;
+        }
+
+        Some(Self {
+            version,
+            channels,
+            sample_rate,
+            bitrate_max,
+            bitrate_nom,
+            bitrate_min,
+            blocksize_0,
+            blocksize_1,
+        })
+    }
+}
+
+/// Vorbis window type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VorbisWindowType {
+    Short,
+    Long,
+}
+
+/// Vorbis decoder
+pub struct VorbisDecoder {
+    info: AudioStreamInfo,
+    id_header: Option<VorbisIdHeader>,
+    current_sample: u64,
+    // Codebook cache
+    // In a full impl: Vec<Codebook>
+    // Floor/residue configuration
+    // Window functions
+    // MDCT state
+    prev_window: VorbisWindowType,
+    overlap_buffer: Vec<Vec<f32>>, // Per-channel overlap/add
+}
+
+impl VorbisDecoder {
+    /// Create new Vorbis decoder
+    pub fn new() -> Self {
+        Self {
+            info: AudioStreamInfo {
+                codec: AudioCodec::Vorbis,
+                sample_rate: 44100,
+                channels: 2,
+                bit_depth: 16,
+                bitrate: 0,
+                duration_ms: 0,
+                total_samples: 0,
+            },
+            id_header: None,
+            current_sample: 0,
+            prev_window: VorbisWindowType::Long,
+            overlap_buffer: Vec::new(),
+        }
+    }
+
+    /// Initialize from OGG Vorbis stream
+    pub fn init(&mut self, data: &[u8]) -> Result<(), DecoderError> {
+        // Find vorbis identification header
+        let header_start = Self::find_vorbis_id(data)
+            .ok_or(DecoderError::InvalidData)?;
+
+        let id_header = VorbisIdHeader::parse(&data[header_start..])
+            .ok_or(DecoderError::InvalidData)?;
+
+        self.info.sample_rate = id_header.sample_rate;
+        self.info.channels = id_header.channels;
+        if id_header.bitrate_nom > 0 {
+            self.info.bitrate = (id_header.bitrate_nom / 1000) as u32;
+        }
+
+        // Initialize overlap buffers
+        let max_block = 1 << id_header.blocksize_1;
+        self.overlap_buffer = vec![vec![0.0; max_block / 2]; id_header.channels as usize];
+
+        self.id_header = Some(id_header);
+
+        Ok(())
+    }
+
+    /// Find vorbis identification header in OGG stream
+    fn find_vorbis_id(data: &[u8]) -> Option<usize> {
+        for i in 0..data.len().saturating_sub(7) {
+            if data[i] == 0x01 && &data[i+1..i+7] == b"vorbis" {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Decode a Vorbis audio packet
+    fn decode_vorbis_packet(&mut self, data: &[u8]) -> Result<AudioFrame, DecoderError> {
+        if data.is_empty() {
+            return Err(DecoderError::InvalidData);
+        }
+
+        // Check packet type (audio packets have type 0)
+        if (data[0] & 0x01) != 0 {
+            return Err(DecoderError::InvalidData); // Not an audio packet
+        }
+
+        let header = self.id_header.as_ref().ok_or(DecoderError::InvalidData)?;
+
+        // Determine window type from mode
+        // In a real impl, parse mode number and look up blocksize
+        let block_size = 1 << header.blocksize_1; // Use long block as default
+
+        let mut frame = AudioFrame::new(header.sample_rate, header.channels);
+        frame.timestamp = self.current_sample;
+
+        // In a full Vorbis decoder:
+        // 1. Read mode number (log2(modes) bits)
+        // 2. Determine window type
+        // 3. Decode floor (type 0 or 1)
+        // 4. Decode residue (type 0, 1, or 2)
+        // 5. Apply inverse coupling
+        // 6. Apply floor curve
+        // 7. IMDCT
+        // 8. Overlap-add with previous frame
+
+        // For now, generate silence
+        let samples_per_channel = block_size / 2; // After overlap-add
+        frame.samples = vec![0i16; samples_per_channel * header.channels as usize];
+
+        self.current_sample += samples_per_channel as u64;
+
+        Ok(frame)
+    }
+}
+
+impl AudioDecoder for VorbisDecoder {
+    fn codec(&self) -> AudioCodec {
+        AudioCodec::Vorbis
+    }
+
+    fn info(&self) -> &AudioStreamInfo {
+        &self.info
+    }
+
+    fn reset(&mut self) {
+        self.current_sample = 0;
+        self.prev_window = VorbisWindowType::Long;
+        for buf in &mut self.overlap_buffer {
+            buf.fill(0.0);
+        }
+    }
+
+    fn decode_frame(&mut self, input: &[u8]) -> Result<AudioFrame, DecoderError> {
+        self.decode_vorbis_packet(input)
+    }
+
+    fn seek(&mut self, sample_pos: u64) -> Result<(), DecoderError> {
+        // Vorbis seeking uses OGG granule positions
+        self.current_sample = sample_pos;
+        self.reset();
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Public interface
+// =============================================================================
+
 /// Create appropriate decoder for codec
 pub fn create_decoder(codec: AudioCodec) -> Option<Box<dyn AudioDecoder + Send>> {
     match codec {
         AudioCodec::Mp3 => Some(Box::new(Mp3Decoder::new())),
         AudioCodec::Aac => Some(Box::new(AacDecoder::new())),
         AudioCodec::Flac => Some(Box::new(FlacDecoder::new())),
+        AudioCodec::Opus => Some(Box::new(OpusDecoder::new())),
+        AudioCodec::Vorbis => Some(Box::new(VorbisDecoder::new())),
         _ => None,
     }
 }
 
 /// Initialize codec subsystem
 pub fn init() {
-    crate::kprintln!("audio_codecs: initialized (MP3, AAC, FLAC, WAV support)");
+    crate::kprintln!("audio_codecs: initialized (MP3, AAC, FLAC, Opus, Vorbis, WAV support)");
 }

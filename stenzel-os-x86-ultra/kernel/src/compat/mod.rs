@@ -10,6 +10,8 @@ pub mod linux;
 pub mod coreutils;
 pub mod windows;
 pub mod containers;
+pub mod flatpak;
+pub mod appimage;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -107,9 +109,21 @@ pub fn init_containers() {
     containers::init();
 }
 
+/// Initialize Flatpak compatibility layer
+pub fn init_flatpak() {
+    flatpak::init();
+}
+
+/// Initialize AppImage support
+pub fn init_appimage() {
+    appimage::init();
+}
+
 /// Initialize all compatibility layers
 pub fn init_all() {
     init_windows();
     init_linux();
     init_containers();
+    init_flatpak();
+    init_appimage();
 }

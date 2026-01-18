@@ -31,6 +31,10 @@ pub mod wifi;
 pub mod ntp;
 pub mod ftp;
 pub mod wireguard;
+pub mod firewall;
+pub mod openvpn;
+pub mod ipsec;
+pub mod profiles;
 
 use alloc::vec::Vec;
 use crate::sync::IrqSafeMutex;

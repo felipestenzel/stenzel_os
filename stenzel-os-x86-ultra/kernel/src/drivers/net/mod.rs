@@ -7,6 +7,7 @@
 //! - Realtek RTL8139 (10/100 Mbps, QEMU, real hardware)
 //! - Realtek RTL8169/8168/8111 (Gigabit Ethernet, real hardware)
 //! - Intel WiFi (iwlwifi - various Intel wireless adapters)
+//! - Intel WiFi 7 (iwlwifi_be - BE200/BE202 802.11be adapters)
 //! - Atheros WiFi (ath9k - AR9xxx/QCA series wireless adapters)
 //! - Broadcom WiFi (brcmfmac - BCM43xx series wireless adapters)
 
@@ -16,9 +17,14 @@ pub mod igb;
 pub mod rtl8139;
 pub mod rtl8169;
 pub mod iwlwifi;
+pub mod iwlwifi_be;
 pub mod ath9k;
 pub mod brcm;
 pub mod rtl8xxxu;
+pub mod rtl8xxxu_wifi;
+pub mod mt7921;
+pub mod brcmfmac;
+pub mod ath11k;
 
 use alloc::vec::Vec;
 use crate::util::KResult;
@@ -74,11 +80,26 @@ pub fn init() {
         return;
     }
 
-    // Try Intel WiFi
+    // Try Intel WiFi (AX200/AX201/AX210/AX211)
     iwlwifi::init();
+
+    // Try Intel WiFi 7 (BE200/BE202)
+    iwlwifi_be::init();
 
     // Try Realtek WiFi (USB adapters)
     rtl8xxxu::init();
+
+    // Try Realtek WiFi (PCIe adapters)
+    rtl8xxxu_wifi::init();
+
+    // Try MediaTek WiFi (MT7921/MT7922/MT7925)
+    mt7921::init();
+
+    // Try Broadcom WiFi (BCM43xx)
+    brcmfmac::init();
+
+    // Try Atheros WiFi 6 (ath11k - QCA6390/WCN6855)
+    ath11k::init();
 
     unsafe { ACTIVE_DRIVER = ActiveDriver::None; }
 }
