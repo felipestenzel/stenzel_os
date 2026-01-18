@@ -8,9 +8,11 @@
 
 extern crate alloc;
 
+pub mod ac97;
 pub mod alsa;
 pub mod hda;
 pub mod mixer;
+pub mod pcspkr;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -223,6 +225,7 @@ impl AudioSystem {
 pub fn init() {
     crate::kprintln!("audio: initializing audio subsystem");
     hda::init();
+    ac97::init();
     mixer::init();
     crate::kprintln!("audio: audio subsystem ready");
 }

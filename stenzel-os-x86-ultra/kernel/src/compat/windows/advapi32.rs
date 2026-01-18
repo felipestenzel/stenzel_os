@@ -562,3 +562,199 @@ pub fn RegSetValueExA(hkey: HKEY, name: &str, reserved: DWORD, dw_type: DWORD, d
 pub fn GetUserNameA(buffer: &mut [u8], size: &mut DWORD) -> BOOL {
     Advapi32::get_user_name_a(buffer, size)
 }
+
+// =============================================================================
+// Export Table
+// =============================================================================
+
+/// Get ADVAPI32 exports
+pub fn get_exports() -> BTreeMap<String, u64> {
+    let mut exports = BTreeMap::new();
+    let mut addr = 0x7FF3_0000_u64;
+
+    // Registry functions
+    exports.insert("RegOpenKeyExA".into(), addr); addr += 0x100;
+    exports.insert("RegOpenKeyExW".into(), addr); addr += 0x100;
+    exports.insert("RegCreateKeyExA".into(), addr); addr += 0x100;
+    exports.insert("RegCreateKeyExW".into(), addr); addr += 0x100;
+    exports.insert("RegCloseKey".into(), addr); addr += 0x100;
+    exports.insert("RegQueryValueExA".into(), addr); addr += 0x100;
+    exports.insert("RegQueryValueExW".into(), addr); addr += 0x100;
+    exports.insert("RegSetValueExA".into(), addr); addr += 0x100;
+    exports.insert("RegSetValueExW".into(), addr); addr += 0x100;
+    exports.insert("RegDeleteValueA".into(), addr); addr += 0x100;
+    exports.insert("RegDeleteValueW".into(), addr); addr += 0x100;
+    exports.insert("RegDeleteKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegDeleteKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegEnumKeyExA".into(), addr); addr += 0x100;
+    exports.insert("RegEnumKeyExW".into(), addr); addr += 0x100;
+    exports.insert("RegEnumValueA".into(), addr); addr += 0x100;
+    exports.insert("RegEnumValueW".into(), addr); addr += 0x100;
+    exports.insert("RegQueryInfoKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegQueryInfoKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegFlushKey".into(), addr); addr += 0x100;
+    exports.insert("RegNotifyChangeKeyValue".into(), addr); addr += 0x100;
+    exports.insert("RegLoadKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegLoadKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegUnLoadKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegUnLoadKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegSaveKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegSaveKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegRestoreKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegRestoreKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegReplaceKeyA".into(), addr); addr += 0x100;
+    exports.insert("RegReplaceKeyW".into(), addr); addr += 0x100;
+    exports.insert("RegConnectRegistryA".into(), addr); addr += 0x100;
+    exports.insert("RegConnectRegistryW".into(), addr); addr += 0x100;
+
+    // Security functions
+    exports.insert("OpenProcessToken".into(), addr); addr += 0x100;
+    exports.insert("OpenThreadToken".into(), addr); addr += 0x100;
+    exports.insert("GetTokenInformation".into(), addr); addr += 0x100;
+    exports.insert("SetTokenInformation".into(), addr); addr += 0x100;
+    exports.insert("AdjustTokenPrivileges".into(), addr); addr += 0x100;
+    exports.insert("AdjustTokenGroups".into(), addr); addr += 0x100;
+    exports.insert("LookupPrivilegeValueA".into(), addr); addr += 0x100;
+    exports.insert("LookupPrivilegeValueW".into(), addr); addr += 0x100;
+    exports.insert("LookupPrivilegeNameA".into(), addr); addr += 0x100;
+    exports.insert("LookupPrivilegeNameW".into(), addr); addr += 0x100;
+    exports.insert("LookupAccountSidA".into(), addr); addr += 0x100;
+    exports.insert("LookupAccountSidW".into(), addr); addr += 0x100;
+    exports.insert("LookupAccountNameA".into(), addr); addr += 0x100;
+    exports.insert("LookupAccountNameW".into(), addr); addr += 0x100;
+    exports.insert("GetUserNameA".into(), addr); addr += 0x100;
+    exports.insert("GetUserNameW".into(), addr); addr += 0x100;
+    exports.insert("GetSecurityDescriptorDacl".into(), addr); addr += 0x100;
+    exports.insert("SetSecurityDescriptorDacl".into(), addr); addr += 0x100;
+    exports.insert("InitializeSecurityDescriptor".into(), addr); addr += 0x100;
+    exports.insert("MakeAbsoluteSD".into(), addr); addr += 0x100;
+    exports.insert("MakeSelfRelativeSD".into(), addr); addr += 0x100;
+    exports.insert("IsValidSecurityDescriptor".into(), addr); addr += 0x100;
+    exports.insert("GetSecurityInfo".into(), addr); addr += 0x100;
+    exports.insert("SetSecurityInfo".into(), addr); addr += 0x100;
+    exports.insert("ConvertSidToStringSidA".into(), addr); addr += 0x100;
+    exports.insert("ConvertSidToStringSidW".into(), addr); addr += 0x100;
+    exports.insert("ConvertStringSidToSidA".into(), addr); addr += 0x100;
+    exports.insert("ConvertStringSidToSidW".into(), addr); addr += 0x100;
+    exports.insert("AllocateAndInitializeSid".into(), addr); addr += 0x100;
+    exports.insert("FreeSid".into(), addr); addr += 0x100;
+    exports.insert("EqualSid".into(), addr); addr += 0x100;
+    exports.insert("CopySid".into(), addr); addr += 0x100;
+    exports.insert("GetLengthSid".into(), addr); addr += 0x100;
+    exports.insert("IsValidSid".into(), addr); addr += 0x100;
+    exports.insert("AccessCheck".into(), addr); addr += 0x100;
+    exports.insert("PrivilegeCheck".into(), addr); addr += 0x100;
+    exports.insert("ImpersonateLoggedOnUser".into(), addr); addr += 0x100;
+    exports.insert("RevertToSelf".into(), addr); addr += 0x100;
+    exports.insert("LogonUserA".into(), addr); addr += 0x100;
+    exports.insert("LogonUserW".into(), addr); addr += 0x100;
+    exports.insert("DuplicateToken".into(), addr); addr += 0x100;
+    exports.insert("DuplicateTokenEx".into(), addr); addr += 0x100;
+    exports.insert("CreateRestrictedToken".into(), addr); addr += 0x100;
+
+    // Cryptography functions
+    exports.insert("CryptAcquireContextA".into(), addr); addr += 0x100;
+    exports.insert("CryptAcquireContextW".into(), addr); addr += 0x100;
+    exports.insert("CryptReleaseContext".into(), addr); addr += 0x100;
+    exports.insert("CryptGenRandom".into(), addr); addr += 0x100;
+    exports.insert("CryptGenKey".into(), addr); addr += 0x100;
+    exports.insert("CryptDestroyKey".into(), addr); addr += 0x100;
+    exports.insert("CryptDuplicateKey".into(), addr); addr += 0x100;
+    exports.insert("CryptExportKey".into(), addr); addr += 0x100;
+    exports.insert("CryptImportKey".into(), addr); addr += 0x100;
+    exports.insert("CryptGetKeyParam".into(), addr); addr += 0x100;
+    exports.insert("CryptSetKeyParam".into(), addr); addr += 0x100;
+    exports.insert("CryptDeriveKey".into(), addr); addr += 0x100;
+    exports.insert("CryptEncrypt".into(), addr); addr += 0x100;
+    exports.insert("CryptDecrypt".into(), addr); addr += 0x100;
+    exports.insert("CryptCreateHash".into(), addr); addr += 0x100;
+    exports.insert("CryptDestroyHash".into(), addr); addr += 0x100;
+    exports.insert("CryptDuplicateHash".into(), addr); addr += 0x100;
+    exports.insert("CryptHashData".into(), addr); addr += 0x100;
+    exports.insert("CryptHashSessionKey".into(), addr); addr += 0x100;
+    exports.insert("CryptGetHashParam".into(), addr); addr += 0x100;
+    exports.insert("CryptSetHashParam".into(), addr); addr += 0x100;
+    exports.insert("CryptSignHashA".into(), addr); addr += 0x100;
+    exports.insert("CryptSignHashW".into(), addr); addr += 0x100;
+    exports.insert("CryptVerifySignatureA".into(), addr); addr += 0x100;
+    exports.insert("CryptVerifySignatureW".into(), addr); addr += 0x100;
+    exports.insert("CryptGetDefaultProviderA".into(), addr); addr += 0x100;
+    exports.insert("CryptGetDefaultProviderW".into(), addr); addr += 0x100;
+    exports.insert("CryptSetProviderA".into(), addr); addr += 0x100;
+    exports.insert("CryptSetProviderW".into(), addr); addr += 0x100;
+    exports.insert("CryptEnumProvidersA".into(), addr); addr += 0x100;
+    exports.insert("CryptEnumProvidersW".into(), addr); addr += 0x100;
+    exports.insert("CryptEnumProviderTypesA".into(), addr); addr += 0x100;
+    exports.insert("CryptEnumProviderTypesW".into(), addr); addr += 0x100;
+    exports.insert("CryptContextAddRef".into(), addr); addr += 0x100;
+    exports.insert("CryptGetProvParam".into(), addr); addr += 0x100;
+    exports.insert("CryptSetProvParam".into(), addr); addr += 0x100;
+    exports.insert("CryptGetUserKey".into(), addr); addr += 0x100;
+
+    // Event logging
+    exports.insert("RegisterEventSourceA".into(), addr); addr += 0x100;
+    exports.insert("RegisterEventSourceW".into(), addr); addr += 0x100;
+    exports.insert("DeregisterEventSource".into(), addr); addr += 0x100;
+    exports.insert("ReportEventA".into(), addr); addr += 0x100;
+    exports.insert("ReportEventW".into(), addr); addr += 0x100;
+    exports.insert("OpenEventLogA".into(), addr); addr += 0x100;
+    exports.insert("OpenEventLogW".into(), addr); addr += 0x100;
+    exports.insert("ClearEventLogA".into(), addr); addr += 0x100;
+    exports.insert("ClearEventLogW".into(), addr); addr += 0x100;
+    exports.insert("CloseEventLog".into(), addr); addr += 0x100;
+    exports.insert("ReadEventLogA".into(), addr); addr += 0x100;
+    exports.insert("ReadEventLogW".into(), addr); addr += 0x100;
+    exports.insert("GetNumberOfEventLogRecords".into(), addr); addr += 0x100;
+    exports.insert("GetOldestEventLogRecord".into(), addr); addr += 0x100;
+    exports.insert("BackupEventLogA".into(), addr); addr += 0x100;
+    exports.insert("BackupEventLogW".into(), addr); addr += 0x100;
+
+    // Service Control Manager
+    exports.insert("OpenSCManagerA".into(), addr); addr += 0x100;
+    exports.insert("OpenSCManagerW".into(), addr); addr += 0x100;
+    exports.insert("OpenServiceA".into(), addr); addr += 0x100;
+    exports.insert("OpenServiceW".into(), addr); addr += 0x100;
+    exports.insert("CloseServiceHandle".into(), addr); addr += 0x100;
+    exports.insert("CreateServiceA".into(), addr); addr += 0x100;
+    exports.insert("CreateServiceW".into(), addr); addr += 0x100;
+    exports.insert("DeleteService".into(), addr); addr += 0x100;
+    exports.insert("StartServiceA".into(), addr); addr += 0x100;
+    exports.insert("StartServiceW".into(), addr); addr += 0x100;
+    exports.insert("ControlService".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceStatus".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceStatusEx".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceConfigA".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceConfigW".into(), addr); addr += 0x100;
+    exports.insert("ChangeServiceConfigA".into(), addr); addr += 0x100;
+    exports.insert("ChangeServiceConfigW".into(), addr); addr += 0x100;
+    exports.insert("EnumServicesStatusA".into(), addr); addr += 0x100;
+    exports.insert("EnumServicesStatusW".into(), addr); addr += 0x100;
+    exports.insert("EnumDependentServicesA".into(), addr); addr += 0x100;
+    exports.insert("EnumDependentServicesW".into(), addr); addr += 0x100;
+    exports.insert("GetServiceDisplayNameA".into(), addr); addr += 0x100;
+    exports.insert("GetServiceDisplayNameW".into(), addr); addr += 0x100;
+    exports.insert("GetServiceKeyNameA".into(), addr); addr += 0x100;
+    exports.insert("GetServiceKeyNameW".into(), addr); addr += 0x100;
+    exports.insert("LockServiceDatabase".into(), addr); addr += 0x100;
+    exports.insert("UnlockServiceDatabase".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceLockStatusA".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceLockStatusW".into(), addr); addr += 0x100;
+    exports.insert("SetServiceStatus".into(), addr); addr += 0x100;
+    exports.insert("RegisterServiceCtrlHandlerA".into(), addr); addr += 0x100;
+    exports.insert("RegisterServiceCtrlHandlerW".into(), addr); addr += 0x100;
+    exports.insert("RegisterServiceCtrlHandlerExA".into(), addr); addr += 0x100;
+    exports.insert("RegisterServiceCtrlHandlerExW".into(), addr); addr += 0x100;
+    exports.insert("StartServiceCtrlDispatcherA".into(), addr); addr += 0x100;
+    exports.insert("StartServiceCtrlDispatcherW".into(), addr); addr += 0x100;
+    exports.insert("SetServiceObjectSecurity".into(), addr); addr += 0x100;
+    exports.insert("QueryServiceObjectSecurity".into(), addr); addr += 0x100;
+    exports.insert("NotifyServiceStatusChangeA".into(), addr); addr += 0x100;
+    exports.insert("NotifyServiceStatusChangeW".into(), addr); addr += 0x100;
+
+    // Misc
+    exports.insert("GetCurrentHwProfileA".into(), addr); addr += 0x100;
+    exports.insert("GetCurrentHwProfileW".into(), addr); addr += 0x100;
+    exports.insert("SystemFunction036".into(), addr); // RtlGenRandom
+
+    exports
+}

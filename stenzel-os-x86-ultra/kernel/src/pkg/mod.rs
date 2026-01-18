@@ -17,6 +17,9 @@ pub mod repository;
 pub mod compress;
 pub mod sign;
 pub mod build;
+pub mod rollback;
+pub mod source;
+pub mod crossbuild;
 
 pub use format::*;
 pub use metadata::*;

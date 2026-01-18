@@ -1,4 +1,6 @@
     pub mod apic;
+pub mod cpu_hotplug;
+pub mod cpufreq;
     pub mod gdt;
     pub mod interrupts;
 pub mod ipi;

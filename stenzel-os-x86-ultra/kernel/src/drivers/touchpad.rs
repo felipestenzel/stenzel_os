@@ -1073,3 +1073,601 @@ pub fn notify_keyboard_activity() {
 pub fn is_initialized() -> bool {
     TOUCHPAD.lock().initialized
 }
+
+// =============================================================================
+// USB HID Touchpad Support
+// =============================================================================
+
+/// USB HID touchpad device
+pub struct UsbTouchpad {
+    /// Slot ID in USB controller
+    pub slot_id: u8,
+    /// Interface number
+    pub interface_number: u8,
+    /// Endpoint number
+    pub endpoint_number: u8,
+    /// Endpoint interval
+    pub endpoint_interval: u8,
+    /// Max packet size
+    pub max_packet_size: u16,
+    /// Device capabilities
+    pub caps: UsbTouchpadCaps,
+    /// Last known finger states
+    pub fingers: [UsbFingerState; 5],
+    /// Number of active fingers
+    pub finger_count: u8,
+    /// Button state
+    pub buttons: u8,
+}
+
+/// USB touchpad capabilities (from HID Report Descriptor)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UsbTouchpadCaps {
+    /// Max X coordinate
+    pub max_x: u32,
+    /// Max Y coordinate
+    pub max_y: u32,
+    /// Max pressure
+    pub max_pressure: u32,
+    /// Max contact count
+    pub max_contacts: u8,
+    /// Has pressure sensing
+    pub has_pressure: bool,
+    /// Has width/height (contact size)
+    pub has_size: bool,
+    /// Device type
+    pub device_type: UsbTouchpadType,
+    /// Report ID for touch data
+    pub touch_report_id: u8,
+}
+
+/// USB touchpad device type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsbTouchpadType {
+    #[default]
+    Unknown,
+    /// Standard touchpad
+    Touchpad,
+    /// Digitizer/tablet
+    Digitizer,
+    /// Touch screen
+    Touchscreen,
+    /// Precision touchpad (Windows 8+ spec)
+    PrecisionTouchpad,
+}
+
+/// USB finger state
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UsbFingerState {
+    /// Contact ID
+    pub contact_id: u8,
+    /// Finger is touching
+    pub tip_switch: bool,
+    /// Finger in range (hovering)
+    pub in_range: bool,
+    /// Confidence (real finger vs palm)
+    pub confidence: bool,
+    /// X coordinate
+    pub x: u16,
+    /// Y coordinate
+    pub y: u16,
+    /// Pressure
+    pub pressure: u16,
+    /// Contact width
+    pub width: u16,
+    /// Contact height
+    pub height: u16,
+}
+
+/// HID Usage Pages
+pub mod hid_usage {
+    pub const GENERIC_DESKTOP: u16 = 0x01;
+    pub const DIGITIZER: u16 = 0x0D;
+    pub const BUTTON: u16 = 0x09;
+
+    // Generic Desktop usages
+    pub const USAGE_X: u16 = 0x30;
+    pub const USAGE_Y: u16 = 0x31;
+
+    // Digitizer usages
+    pub const USAGE_TIP_SWITCH: u16 = 0x42;
+    pub const USAGE_IN_RANGE: u16 = 0x32;
+    pub const USAGE_TOUCH_VALID: u16 = 0x47;
+    pub const USAGE_CONTACT_ID: u16 = 0x51;
+    pub const USAGE_CONTACT_COUNT: u16 = 0x54;
+    pub const USAGE_CONTACT_MAX: u16 = 0x55;
+    pub const USAGE_TIP_PRESSURE: u16 = 0x30;
+    pub const USAGE_CONFIDENCE: u16 = 0x47;
+    pub const USAGE_WIDTH: u16 = 0x48;
+    pub const USAGE_HEIGHT: u16 = 0x49;
+    pub const USAGE_SCAN_TIME: u16 = 0x56;
+
+    // Digitizer device types
+    pub const USAGE_TOUCHPAD: u16 = 0x05;
+    pub const USAGE_TOUCH_SCREEN: u16 = 0x04;
+    pub const USAGE_PEN: u16 = 0x02;
+    pub const USAGE_FINGER: u16 = 0x22;
+}
+
+/// Global USB touchpad list
+static USB_TOUCHPADS: Mutex<Vec<UsbTouchpad>> = Mutex::new(Vec::new());
+
+/// USB touchpad report buffer
+static USB_TOUCHPAD_BUFFERS: Mutex<Vec<[u8; 64]>> = Mutex::new(Vec::new());
+
+/// Pending USB touchpad polls
+static PENDING_USB_TOUCHPAD_POLLS: Mutex<Vec<(u8, u8)>> = Mutex::new(Vec::new());
+
+impl UsbTouchpad {
+    /// Create a new USB touchpad device
+    pub fn new(
+        slot_id: u8,
+        interface_number: u8,
+        endpoint_number: u8,
+        endpoint_interval: u8,
+        max_packet_size: u16,
+    ) -> Self {
+        Self {
+            slot_id,
+            interface_number,
+            endpoint_number,
+            endpoint_interval,
+            max_packet_size,
+            caps: UsbTouchpadCaps::default(),
+            fingers: [UsbFingerState::default(); 5],
+            finger_count: 0,
+            buttons: 0,
+        }
+    }
+
+    /// Parse HID Report Descriptor to extract touchpad capabilities
+    pub fn parse_report_descriptor(&mut self, desc: &[u8]) {
+        // Simple HID Report Descriptor parser
+        let mut i = 0;
+        let mut current_usage_page: u16 = 0;
+        let mut logical_max: u32 = 0;
+        let mut report_size: u8 = 0;
+        let mut report_count: u8 = 0;
+        let mut usage_stack: Vec<u16> = Vec::new();
+
+        while i < desc.len() {
+            let header = desc[i];
+            let size = match header & 0x03 {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                3 => 4,
+                _ => 0,
+            };
+            let item_type = (header >> 2) & 0x03;
+            let tag = (header >> 4) & 0x0F;
+
+            // Read data bytes
+            let data: u32 = if size == 0 {
+                0
+            } else if i + 1 < desc.len() {
+                match size {
+                    1 => desc[i + 1] as u32,
+                    2 if i + 2 < desc.len() => {
+                        (desc[i + 1] as u32) | ((desc[i + 2] as u32) << 8)
+                    }
+                    4 if i + 4 < desc.len() => {
+                        (desc[i + 1] as u32)
+                            | ((desc[i + 2] as u32) << 8)
+                            | ((desc[i + 3] as u32) << 16)
+                            | ((desc[i + 4] as u32) << 24)
+                    }
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+
+            match item_type {
+                // Main items
+                0 => match tag {
+                    // Input
+                    8 => {
+                        // Process accumulated usages
+                        for usage in &usage_stack {
+                            match current_usage_page {
+                                hid_usage::DIGITIZER => match *usage {
+                                    hid_usage::USAGE_CONTACT_MAX => {
+                                        self.caps.max_contacts = logical_max as u8;
+                                    }
+                                    hid_usage::USAGE_TOUCHPAD => {
+                                        self.caps.device_type = UsbTouchpadType::Touchpad;
+                                    }
+                                    hid_usage::USAGE_TOUCH_SCREEN => {
+                                        self.caps.device_type = UsbTouchpadType::Touchscreen;
+                                    }
+                                    _ => {}
+                                },
+                                hid_usage::GENERIC_DESKTOP => match *usage {
+                                    hid_usage::USAGE_X => {
+                                        self.caps.max_x = logical_max;
+                                    }
+                                    hid_usage::USAGE_Y => {
+                                        self.caps.max_y = logical_max;
+                                    }
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        }
+                        usage_stack.clear();
+                    }
+                    // Collection
+                    10 => {}
+                    // End Collection
+                    12 => {}
+                    _ => {}
+                },
+                // Global items
+                1 => match tag {
+                    // Usage Page
+                    0 => {
+                        current_usage_page = data as u16;
+                    }
+                    // Logical Minimum
+                    1 => {}
+                    // Logical Maximum
+                    2 => {
+                        logical_max = data;
+                    }
+                    // Report Size
+                    7 => {
+                        report_size = data as u8;
+                    }
+                    // Report ID
+                    8 => {
+                        self.caps.touch_report_id = data as u8;
+                    }
+                    // Report Count
+                    9 => {
+                        report_count = data as u8;
+                    }
+                    _ => {}
+                },
+                // Local items
+                2 => match tag {
+                    // Usage
+                    0 => {
+                        usage_stack.push(data as u16);
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+
+            i += 1 + size as usize;
+        }
+
+        // Set defaults if not found
+        if self.caps.max_x == 0 {
+            self.caps.max_x = 4096;
+        }
+        if self.caps.max_y == 0 {
+            self.caps.max_y = 4096;
+        }
+        if self.caps.max_contacts == 0 {
+            self.caps.max_contacts = 5;
+        }
+        if self.caps.device_type == UsbTouchpadType::Unknown {
+            self.caps.device_type = UsbTouchpadType::Touchpad;
+        }
+
+        crate::kprintln!(
+            "touchpad: USB touchpad caps: max_x={}, max_y={}, max_contacts={}, type={:?}",
+            self.caps.max_x,
+            self.caps.max_y,
+            self.caps.max_contacts,
+            self.caps.device_type
+        );
+    }
+
+    /// Process a USB HID touchpad report
+    pub fn process_report(&mut self, report: &[u8]) {
+        if report.is_empty() {
+            return;
+        }
+
+        // Check report ID if applicable
+        let offset = if self.caps.touch_report_id != 0 {
+            if report[0] != self.caps.touch_report_id {
+                return;
+            }
+            1
+        } else {
+            0
+        };
+
+        let data = &report[offset..];
+        if data.len() < 6 {
+            return;
+        }
+
+        // Parse based on typical touchpad report format:
+        // [tip_switch/contact_id] [x_lo] [x_hi] [y_lo] [y_hi] [optional: pressure, width, height]
+        // This is a simplified parser for common formats
+
+        // Try to parse as Windows Precision Touchpad format
+        self.parse_precision_touchpad(data);
+    }
+
+    /// Parse Windows Precision Touchpad format
+    fn parse_precision_touchpad(&mut self, data: &[u8]) {
+        if data.len() < 7 {
+            return;
+        }
+
+        // Common PTP format:
+        // Byte 0: Button state
+        // Byte 1: Contact count
+        // Per finger (variable, typically 9 bytes each):
+        //   Byte 0: Tip switch | confidence (bits 0-1), contact ID (bits 2-7)
+        //   Byte 1-2: X coordinate (16-bit)
+        //   Byte 3-4: Y coordinate (16-bit)
+        //   Optional: width, height, pressure
+
+        self.buttons = data[0] & 0x01;
+        let contact_count = data[1].min(5);
+        self.finger_count = contact_count;
+
+        let mut offset = 2;
+        for i in 0..contact_count as usize {
+            if offset + 5 > data.len() {
+                break;
+            }
+
+            let flags = data[offset];
+            self.fingers[i].tip_switch = (flags & 0x01) != 0;
+            self.fingers[i].confidence = (flags & 0x02) != 0;
+            self.fingers[i].contact_id = (flags >> 2) & 0x3F;
+
+            self.fingers[i].x = (data[offset + 1] as u16) | ((data[offset + 2] as u16) << 8);
+            self.fingers[i].y = (data[offset + 3] as u16) | ((data[offset + 4] as u16) << 8);
+
+            // Optional: pressure if available
+            if offset + 7 <= data.len() {
+                self.fingers[i].pressure =
+                    (data[offset + 5] as u16) | ((data[offset + 6] as u16) << 8);
+                offset += 7;
+            } else {
+                self.fingers[i].pressure = if self.fingers[i].tip_switch { 100 } else { 0 };
+                offset += 5;
+            }
+        }
+
+        // Generate touchpad events
+        self.generate_events();
+    }
+
+    /// Generate touchpad events from current state
+    fn generate_events(&mut self) {
+        let now = crate::time::ticks();
+
+        // Count active fingers
+        let active_count = self.fingers[..self.finger_count as usize]
+            .iter()
+            .filter(|f| f.tip_switch)
+            .count() as u8;
+
+        if active_count == 0 && self.buttons == 0 {
+            return;
+        }
+
+        // Use first active finger for position
+        let (x, y, pressure) = if let Some(finger) = self.fingers[..self.finger_count as usize]
+            .iter()
+            .find(|f| f.tip_switch)
+        {
+            // Scale to standard touchpad coordinate space
+            let scaled_x = ((finger.x as u32 * 65535) / self.caps.max_x.max(1)) as i32;
+            let scaled_y = ((finger.y as u32 * 65535) / self.caps.max_y.max(1)) as i32;
+            (scaled_x, scaled_y, finger.pressure as u8)
+        } else {
+            (0, 0, 0)
+        };
+
+        // Get previous position for delta calculation
+        let mut driver = TOUCHPAD.lock();
+        let dx = x - driver.last_x;
+        let dy = y - driver.last_y;
+
+        // Generate event
+        let event = TouchpadEvent {
+            event_type: if active_count > 0 {
+                TouchpadEventType::Move
+            } else {
+                TouchpadEventType::Release
+            },
+            x,
+            y,
+            dx,
+            dy,
+            pressure,
+            fingers: active_count,
+            buttons: ButtonState {
+                left: (self.buttons & 0x01) != 0,
+                right: (self.buttons & 0x02) != 0,
+                middle: (self.buttons & 0x04) != 0,
+            },
+            timestamp: now,
+        };
+
+        // Update driver state
+        driver.last_x = x;
+        driver.last_y = y;
+        driver.num_fingers = active_count;
+
+        drop(driver);
+
+        // Emit event
+        emit_event(event);
+
+        // Also update mouse driver for cursor movement
+        if dx != 0 || dy != 0 {
+            // Scale movement for mouse
+            let speed = TOUCHPAD.lock().config.speed as i32;
+            let mouse_dx = (dx * speed) / 500;
+            let mouse_dy = (dy * speed) / 500;
+            super::mouse::queue_event(
+                mouse_dx as i16,
+                mouse_dy as i16,
+                (self.buttons & 0x01) != 0,
+                (self.buttons & 0x02) != 0,
+                (self.buttons & 0x04) != 0,
+            );
+        }
+    }
+}
+
+/// Register a USB touchpad device
+pub fn register_usb_touchpad(touchpad: UsbTouchpad) {
+    let mut touchpads = USB_TOUCHPADS.lock();
+
+    crate::kprintln!(
+        "touchpad: USB touchpad registered (slot {}, endpoint {})",
+        touchpad.slot_id,
+        touchpad.endpoint_number
+    );
+
+    // Update main touchpad driver to indicate USB touchpad present
+    {
+        let mut driver = TOUCHPAD.lock();
+        driver.caps.protocol = TouchpadProtocol::I2cHid; // Reuse for USB
+        driver.caps.absolute = true;
+        driver.caps.max_x = touchpad.caps.max_x;
+        driver.caps.max_y = touchpad.caps.max_y;
+        driver.caps.max_fingers = touchpad.caps.max_contacts;
+        driver.caps.has_pressure = touchpad.caps.has_pressure;
+        driver.initialized = true;
+    }
+
+    touchpads.push(touchpad);
+}
+
+/// Queue USB touchpad interrupt polls
+fn queue_usb_touchpad_polls() {
+    if let Some(ctrl_arc) = super::usb::xhci::controller() {
+        let mut ctrl = ctrl_arc.lock();
+        let touchpads = USB_TOUCHPADS.lock();
+        let mut buffers = USB_TOUCHPAD_BUFFERS.lock();
+        let mut pending = PENDING_USB_TOUCHPAD_POLLS.lock();
+
+        // Ensure we have enough buffers
+        while buffers.len() < touchpads.len() {
+            buffers.push([0u8; 64]);
+        }
+
+        for (i, tp) in touchpads.iter().enumerate() {
+            // Check if we already have a pending poll
+            if pending
+                .iter()
+                .any(|(s, e)| *s == tp.slot_id && *e == tp.endpoint_number)
+            {
+                continue;
+            }
+
+            // Queue an interrupt IN transfer
+            if ctrl
+                .queue_interrupt_in(tp.slot_id, tp.endpoint_number, &mut buffers[i])
+                .is_ok()
+            {
+                pending.push((tp.slot_id, tp.endpoint_number));
+            }
+        }
+    }
+}
+
+/// Poll all USB touchpads for new data
+pub fn poll_usb_touchpads() {
+    // Queue any pending polls
+    queue_usb_touchpad_polls();
+
+    // Check for completed transfers
+    if let Some(ctrl_arc) = super::usb::xhci::controller() {
+        let ctrl = ctrl_arc.lock();
+
+        while let Some((slot_id, ep_id, _residual)) = ctrl.poll_interrupt_transfer() {
+            let mut pending = PENDING_USB_TOUCHPAD_POLLS.lock();
+            let mut touchpads = USB_TOUCHPADS.lock();
+            let buffers = USB_TOUCHPAD_BUFFERS.lock();
+
+            let endpoint_num = if ep_id > 0 { (ep_id - 1) / 2 } else { 0 };
+
+            if let Some(pos) = pending
+                .iter()
+                .position(|(s, e)| *s == slot_id && *e == endpoint_num)
+            {
+                pending.remove(pos);
+
+                // Find the touchpad
+                for (i, tp) in touchpads.iter_mut().enumerate() {
+                    if tp.slot_id == slot_id && tp.endpoint_number == endpoint_num {
+                        // Process the report
+                        tp.process_report(&buffers[i]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Check if any USB touchpads are registered
+pub fn has_usb_touchpad() -> bool {
+    !USB_TOUCHPADS.lock().is_empty()
+}
+
+/// Get count of USB touchpads
+pub fn usb_touchpad_count() -> usize {
+    USB_TOUCHPADS.lock().len()
+}
+
+// HID interface detection for touchpads
+
+/// Check if a HID interface is a touchpad
+pub fn is_touchpad_interface(interface_class: u8, interface_subclass: u8, interface_protocol: u8) -> bool {
+    // HID class (0x03) with no boot protocol or digitizer-like
+    if interface_class != 0x03 {
+        return false;
+    }
+    // Not boot keyboard (1) or boot mouse (2)
+    if interface_subclass == 1 && (interface_protocol == 1 || interface_protocol == 2) {
+        return false;
+    }
+    true
+}
+
+/// Configure a USB touchpad from device descriptors
+pub fn configure_usb_touchpad(
+    slot_id: u8,
+    interface_number: u8,
+    endpoint_number: u8,
+    endpoint_interval: u8,
+    max_packet_size: u16,
+    report_descriptor: Option<&[u8]>,
+) {
+    let mut touchpad = UsbTouchpad::new(
+        slot_id,
+        interface_number,
+        endpoint_number,
+        endpoint_interval,
+        max_packet_size,
+    );
+
+    // Parse report descriptor if available
+    if let Some(desc) = report_descriptor {
+        touchpad.parse_report_descriptor(desc);
+    } else {
+        // Use defaults
+        touchpad.caps.max_x = 4096;
+        touchpad.caps.max_y = 4096;
+        touchpad.caps.max_contacts = 5;
+        touchpad.caps.device_type = UsbTouchpadType::Touchpad;
+    }
+
+    register_usb_touchpad(touchpad);
+}

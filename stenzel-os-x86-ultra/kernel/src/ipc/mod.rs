@@ -1,13 +1,14 @@
 //! Inter-Process Communication (IPC)
 //!
 //! System V IPC: shared memory, semaphores, message queues.
-//! Linux-specific: eventfd.
+//! Linux-specific: eventfd, namespaces.
 
 #![allow(dead_code)]
 
 pub mod shm;
 pub mod msg;
 pub mod eventfd;
+pub mod namespace;
 
 pub use shm::{
     sys_shmget, sys_shmat, sys_shmdt, sys_shmctl,

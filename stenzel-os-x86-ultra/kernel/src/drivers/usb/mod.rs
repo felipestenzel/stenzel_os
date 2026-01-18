@@ -9,11 +9,15 @@
 
 #![allow(dead_code)]
 
+pub mod audio;
 pub mod devices;
 pub mod ehci;
 pub mod hid;
 pub mod hub;
+pub mod ohci;
 pub mod storage;
+pub mod uhci;
+pub mod video;
 pub mod xhci;
 
 // Re-export device management
@@ -302,4 +306,6 @@ pub fn init() {
     hid::init();
     hub::init();
     storage::init();
+    audio::init();
+    video::init();
 }

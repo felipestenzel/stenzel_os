@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 use crate::drivers::framebuffer::Color;
 use super::surface::{Surface, SurfaceId, PixelFormat};
+use super::transparency::{WindowTransparency, Opacity, BlendMode};
 
 /// A unique window identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -137,6 +138,8 @@ pub struct Window {
     needs_redraw: bool,
     /// Saved position before maximize
     saved_rect: Option<(isize, isize, usize, usize)>,
+    /// Transparency settings
+    transparency: WindowTransparency,
 }
 
 impl Window {
@@ -164,6 +167,7 @@ impl Window {
             owner_pid: None,
             needs_redraw: true,
             saved_rect: None,
+            transparency: WindowTransparency::default(),
         }
     }
 
@@ -460,6 +464,86 @@ impl Window {
         self.min_height = min_height;
         self.max_width = max_width;
         self.max_height = max_height;
+    }
+
+    // ========================================================================
+    // Transparency Methods
+    // ========================================================================
+
+    /// Get window transparency settings
+    pub fn transparency(&self) -> &WindowTransparency {
+        &self.transparency
+    }
+
+    /// Get mutable transparency settings
+    pub fn transparency_mut(&mut self) -> &mut WindowTransparency {
+        self.needs_redraw = true;
+        &mut self.transparency
+    }
+
+    /// Set window opacity (0-255)
+    pub fn set_opacity(&mut self, opacity: u8) {
+        self.transparency.opacity = Opacity(opacity);
+        self.needs_redraw = true;
+    }
+
+    /// Set window opacity from percentage (0-100)
+    pub fn set_opacity_percent(&mut self, percent: u8) {
+        self.transparency.opacity = Opacity::from_percent(percent);
+        self.needs_redraw = true;
+    }
+
+    /// Get window opacity (0-255)
+    pub fn opacity(&self) -> u8 {
+        self.transparency.opacity.0
+    }
+
+    /// Get window opacity as percentage (0-100)
+    pub fn opacity_percent(&self) -> u8 {
+        self.transparency.opacity.as_percent()
+    }
+
+    /// Enable drop shadow
+    pub fn enable_shadow(&mut self, enabled: bool) {
+        self.transparency.shadow_enabled = enabled;
+        self.needs_redraw = true;
+    }
+
+    /// Check if shadow is enabled
+    pub fn has_shadow(&self) -> bool {
+        self.transparency.shadow_enabled
+    }
+
+    /// Enable glass effect
+    pub fn enable_glass(&mut self, enabled: bool) {
+        self.transparency.glass_enabled = enabled;
+        self.needs_redraw = true;
+    }
+
+    /// Check if glass effect is enabled
+    pub fn has_glass(&self) -> bool {
+        self.transparency.glass_enabled
+    }
+
+    /// Set blend mode
+    pub fn set_blend_mode(&mut self, mode: BlendMode) {
+        self.transparency.blend_mode = mode;
+        self.needs_redraw = true;
+    }
+
+    /// Get blend mode
+    pub fn blend_mode(&self) -> BlendMode {
+        self.transparency.blend_mode
+    }
+
+    /// Check if window is fully opaque
+    pub fn is_opaque(&self) -> bool {
+        self.transparency.is_opaque()
+    }
+
+    /// Check if click should pass through at given point's alpha
+    pub fn should_click_through(&self, alpha: u8) -> bool {
+        self.transparency.should_click_through(alpha)
     }
 
     /// Render the window to a surface (decorations + content)

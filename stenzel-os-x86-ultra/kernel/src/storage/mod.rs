@@ -13,6 +13,7 @@ pub mod block;
 pub mod cache;
 pub mod gpt;
 pub mod mbr;
+pub mod raid;
 pub mod ramdisk;
 
 pub use block::{BlockDevice, BlockDeviceId, PartitionBlockDevice};
@@ -105,6 +106,21 @@ pub fn init() {
                     }
                 }
             }
+        }
+    }
+
+    // Se ainda não encontrou, tenta IDE (para drives legados)
+    if ROOT_BLOCK.get().is_none() {
+        // Probe for IDE controller via PCI
+        for d in &pci_devs {
+            if drivers::storage::ide::probe(d).is_some() {
+                break; // Found IDE controller
+            }
+        }
+        // Initialize IDE regardless of PCI (legacy ISA IDE)
+        if let Ok(dev) = drivers::storage::ide::init_from_pci(()) {
+            crate::kprintln!("storage: IDE inicializado ({} blocks)", dev.num_blocks());
+            ROOT_BLOCK.call_once(|| dev);
         }
     }
 

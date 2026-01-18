@@ -10,6 +10,7 @@ pub mod scan;
 pub mod crypto;
 pub mod driver;
 pub mod wpa;
+pub mod wpa3;
 pub mod connection;
 
 use alloc::string::String;

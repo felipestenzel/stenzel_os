@@ -12,6 +12,7 @@ use crate::syscall::Pipe;
 use crate::util::{KError, KResult};
 
 use super::vfs::{DirEntry, Inode, InodeKind, InodeOps, Metadata};
+use super::xattr::{SyncXattrStorage, XattrFlags};
 
 pub struct TmpFs;
 
@@ -33,6 +34,7 @@ impl TmpFs {
             node: TmpfsNode::Dir {
                 children: RwLock::new(BTreeMap::new()),
             },
+            xattrs: SyncXattrStorage::new(),
         });
 
         Inode(root)
@@ -63,6 +65,8 @@ pub struct TmpfsInode {
     parent: RwLock<Option<Weak<TmpfsInode>>>,
     meta: RwLock<Metadata>,
     node: TmpfsNode,
+    /// Extended attributes storage
+    xattrs: SyncXattrStorage,
 }
 
 impl TmpfsInode {
@@ -158,6 +162,7 @@ impl InodeOps for TmpfsInode {
                 parent: RwLock::new(Some(parent_weak.clone())),
                 meta: RwLock::new(meta),
                 node,
+                xattrs: SyncXattrStorage::new(),
             }
         });
 
@@ -227,6 +232,7 @@ impl InodeOps for TmpfsInode {
             node: TmpfsNode::Symlink {
                 target: RwLock::new(String::from(target)),
             },
+            xattrs: SyncXattrStorage::new(),
         });
 
         let inode = Inode(node);
@@ -266,6 +272,7 @@ impl InodeOps for TmpfsInode {
             node: TmpfsNode::Fifo {
                 pipe: Pipe::new(),
             },
+            xattrs: SyncXattrStorage::new(),
         });
 
         let inode = Inode(node);
@@ -379,6 +386,23 @@ impl InodeOps for TmpfsInode {
 
         let data = self.as_file()?;
         Ok(data.read().len())
+    }
+
+    // Extended attributes support
+    fn getxattr(&self, name: &str) -> KResult<Vec<u8>> {
+        self.xattrs.get(name).ok_or(KError::NotFound)
+    }
+
+    fn setxattr(&self, name: &str, value: Vec<u8>, flags: XattrFlags) -> KResult<()> {
+        self.xattrs.set(name, value, flags)
+    }
+
+    fn removexattr(&self, name: &str) -> KResult<()> {
+        self.xattrs.remove(name)
+    }
+
+    fn listxattr(&self) -> KResult<Vec<String>> {
+        Ok(self.xattrs.list())
     }
 }
 

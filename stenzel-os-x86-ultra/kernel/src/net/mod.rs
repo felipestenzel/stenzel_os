@@ -26,8 +26,10 @@ pub mod dns;
 pub mod dhcp;
 pub mod http;
 pub mod tls;
+pub mod ssh;
 pub mod wifi;
 pub mod ntp;
+pub mod ftp;
 
 use alloc::vec::Vec;
 use crate::sync::IrqSafeMutex;

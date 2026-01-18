@@ -793,7 +793,7 @@ pub fn start_aps() {
 
     // Start each AP
     for (idx, &apic_id) in ap_ids.iter().enumerate() {
-        start_ap(apic_id, idx);
+        start_ap_internal(apic_id, idx);
     }
 
     let started = APS_STARTED.load(Ordering::Relaxed);
@@ -848,8 +848,8 @@ fn setup_trampoline() {
     }
 }
 
-/// Start a single AP
-fn start_ap(apic_id: u8, stack_idx: usize) {
+/// Start a single AP (internal function used during boot)
+fn start_ap_internal(apic_id: u8, stack_idx: usize) {
     // Set stack pointer for this AP
     let stack_ptr = {
         let stacks = AP_STACKS.lock();
@@ -913,6 +913,102 @@ fn delay_us(us: u32) {
     // Rough estimate: ~1000 iterations per microsecond on modern CPUs
     for _ in 0..(us * 100) {
         core::hint::spin_loop();
+    }
+}
+
+/// Start an AP for CPU hotplug
+///
+/// This is the public interface for starting an AP dynamically.
+/// It allocates a stack and calls the internal start_ap function.
+pub fn start_ap(apic_id: u8) -> crate::util::KResult<()> {
+    use crate::util::KError;
+
+    // First check if this AP is already online
+    {
+        let cpus = CPU_INFO.lock();
+        for cpu in cpus.iter() {
+            if cpu.apic_id == apic_id && cpu.online {
+                return Ok(()); // Already online
+            }
+        }
+    }
+
+    // Allocate a stack index for this AP
+    let stack_idx = {
+        let stacks = AP_STACKS.lock();
+        if stacks.is_empty() {
+            return Err(KError::NoMemory);
+        }
+        // Find a free stack slot (we use the number of online APs as index)
+        let cpus = CPU_INFO.lock();
+        let online_aps = cpus.iter()
+            .filter(|c| c.online && !c.is_bsp)
+            .count();
+        if online_aps >= stacks.len() {
+            return Err(KError::NoMemory);
+        }
+        online_aps
+    };
+
+    // Clear started flag
+    AP_STARTED_FLAG.store(false, Ordering::SeqCst);
+    CURRENT_AP_APIC_ID.store(apic_id as u32, Ordering::Relaxed);
+
+    // Set stack pointer for this AP
+    let stack_ptr = {
+        let stacks = AP_STACKS.lock();
+        if stack_idx >= stacks.len() {
+            return Err(KError::NoMemory);
+        }
+        // Stack grows down, so point to the end
+        unsafe { stacks[stack_idx].0.add(AP_STACK_SIZE) }
+    };
+
+    unsafe {
+        // Write stack pointer to trampoline data area
+        let trampoline_virt = crate::mm::phys_to_virt(
+            x86_64::PhysAddr::new(AP_TRAMPOLINE_ADDR)
+        ).as_u64();
+        let stack_data_ptr = (trampoline_virt + AP_STACK_OFFSET as u64) as *mut u64;
+        *stack_data_ptr = stack_ptr as u64;
+    }
+
+    // Send INIT IPI
+    super::apic::send_init_ipi(apic_id);
+
+    // Wait 10ms
+    delay_ms(10);
+
+    // Send SIPI (Startup IPI) - vector is page number of trampoline
+    let vector = (AP_TRAMPOLINE_ADDR / 0x1000) as u8;
+    super::apic::send_sipi(apic_id, vector);
+
+    // Wait 200us
+    delay_us(200);
+
+    // If AP didn't start, send SIPI again
+    if !AP_STARTED_FLAG.load(Ordering::SeqCst) {
+        super::apic::send_sipi(apic_id, vector);
+        delay_ms(100); // Wait longer for second attempt
+    }
+
+    // Check if AP started
+    if AP_STARTED_FLAG.load(Ordering::SeqCst) {
+        crate::kprintln!("smp: AP (APIC ID {}) started via hotplug", apic_id);
+
+        // Update CPU info
+        let mut cpus = CPU_INFO.lock();
+        for cpu in cpus.iter_mut() {
+            if cpu.apic_id == apic_id {
+                cpu.online = true;
+                break;
+            }
+        }
+
+        Ok(())
+    } else {
+        crate::kprintln!("smp: AP (APIC ID {}) failed to start via hotplug", apic_id);
+        Err(KError::IO)
     }
 }
 

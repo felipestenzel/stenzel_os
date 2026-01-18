@@ -24,6 +24,8 @@
     pub mod sysfs;
     mod tmpfs;
     pub mod vfs;
+    pub mod xattr;
+    pub mod acl;
 
     pub use vfs::{Inode, InodeKind, Metadata, Mode, Vfs};
 

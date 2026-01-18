@@ -9,6 +9,7 @@ pub mod linux_syscall;
 pub mod linux;
 pub mod coreutils;
 pub mod windows;
+pub mod containers;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -101,8 +102,14 @@ pub fn init_linux() {
     linux::init();
 }
 
+/// Initialize container runtime
+pub fn init_containers() {
+    containers::init();
+}
+
 /// Initialize all compatibility layers
 pub fn init_all() {
     init_windows();
     init_linux();
+    init_containers();
 }

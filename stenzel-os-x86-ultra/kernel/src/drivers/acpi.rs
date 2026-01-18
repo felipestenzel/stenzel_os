@@ -819,6 +819,373 @@ pub fn handle_sleep_button() {
 pub fn poll_acpi_events() {
     handle_power_button();
     handle_sleep_button();
+    handle_lid_switch();
+}
+
+// ==================== Lid Switch ====================
+
+// Note: spin::Once already imported at top of file
+
+/// Lid switch state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LidState {
+    Open,
+    Closed,
+    Unknown,
+}
+
+/// Lid switch configuration and state
+pub struct LidSwitch {
+    /// Current state
+    state: LidState,
+    /// Previous state (for detecting changes)
+    prev_state: LidState,
+    /// Whether lid switch is detected
+    present: bool,
+    /// Action when lid is closed
+    close_action: LidAction,
+    /// Action when lid is opened
+    open_action: LidAction,
+    /// GPE number for lid events (if using GPE)
+    gpe_number: Option<u8>,
+    /// Whether lid wake is enabled
+    wake_enabled: bool,
+}
+
+/// Action to take on lid events
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LidAction {
+    /// Do nothing
+    None,
+    /// Suspend to RAM
+    Suspend,
+    /// Lock screen (notify userspace)
+    Lock,
+    /// Hibernate
+    Hibernate,
+    /// Shutdown
+    Shutdown,
+}
+
+impl LidAction {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "none" | "ignore" => Some(Self::None),
+            "suspend" | "sleep" => Some(Self::Suspend),
+            "lock" => Some(Self::Lock),
+            "hibernate" => Some(Self::Hibernate),
+            "shutdown" | "poweroff" => Some(Self::Shutdown),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Suspend => "suspend",
+            Self::Lock => "lock",
+            Self::Hibernate => "hibernate",
+            Self::Shutdown => "shutdown",
+        }
+    }
+}
+
+static LID_SWITCH: spin::Mutex<Option<LidSwitch>> = spin::Mutex::new(None);
+
+/// Initialize lid switch detection
+pub fn init_lid_switch() {
+    // Try to detect lid switch via ACPI
+    let mut lid = LidSwitch {
+        state: LidState::Unknown,
+        prev_state: LidState::Unknown,
+        present: false,
+        close_action: LidAction::Suspend,
+        open_action: LidAction::None,
+        gpe_number: None,
+        wake_enabled: true,
+    };
+
+    // Method 1: Check for _LID device in DSDT
+    if let Some(dsdt) = DSDT_INFO.get() {
+        for device in &dsdt.devices {
+            // Look for PNP0C0D (ACPI lid device)
+            if device.hid.as_deref() == Some("PNP0C0D") {
+                lid.present = true;
+                crate::kprintln!("acpi: lid switch found (PNP0C0D)");
+                break;
+            }
+        }
+    }
+
+    // Method 2: Try reading from standard EC port
+    if !lid.present {
+        // Check for embedded controller which often reports lid state
+        if check_ec_lid_support() {
+            lid.present = true;
+            crate::kprintln!("acpi: lid switch detected via EC");
+        }
+    }
+
+    // Method 3: Try GPE-based lid (common on Intel laptops)
+    if !lid.present {
+        // GPE 0x17 is common for lid events
+        if check_gpe_lid_support(0x17) {
+            lid.present = true;
+            lid.gpe_number = Some(0x17);
+            crate::kprintln!("acpi: lid switch detected via GPE");
+        }
+    }
+
+    if lid.present {
+        // Get initial state
+        lid.state = read_lid_state_internal();
+        lid.prev_state = lid.state;
+        crate::kprintln!("acpi: lid state: {:?}", lid.state);
+    }
+
+    *LID_SWITCH.lock() = Some(lid);
+}
+
+/// Check if EC reports lid state
+fn check_ec_lid_support() -> bool {
+    // EC (Embedded Controller) is at ports 0x62/0x66
+    // This is simplified - real implementation would query EC properly
+    false
+}
+
+/// Check if a GPE is available for lid events
+fn check_gpe_lid_support(_gpe: u8) -> bool {
+    // Check GPE enable registers
+    // This is simplified
+    false
+}
+
+/// Read current lid state from hardware
+fn read_lid_state_internal() -> LidState {
+    // Method 1: Try to evaluate _LID method
+    // In a full ACPI implementation, we would evaluate the _LID method
+    // For now, use simplified detection
+
+    // Method 2: Read from EC
+    if let Some(state) = read_ec_lid_state() {
+        return state;
+    }
+
+    // Method 3: Check GPIO (platform-specific)
+    // Many laptops have a GPIO pin for lid state
+
+    LidState::Unknown
+}
+
+/// Read lid state from Embedded Controller
+fn read_ec_lid_state() -> Option<LidState> {
+    use x86_64::instructions::port::Port;
+
+    // EC command port is 0x66, data port is 0x62
+    const EC_SC: u16 = 0x66;  // Status/Command
+    const EC_DATA: u16 = 0x62;
+
+    // Check if EC is present and ready
+    let status = unsafe {
+        let mut port: Port<u8> = Port::new(EC_SC);
+        port.read()
+    };
+
+    if status == 0xFF {
+        return None; // EC not present
+    }
+
+    // Wait for input buffer empty
+    for _ in 0..10000 {
+        let s = unsafe {
+            let mut port: Port<u8> = Port::new(EC_SC);
+            port.read()
+        };
+        if s & 0x02 == 0 {
+            break;
+        }
+    }
+
+    // Send read command (0x80 = read)
+    // Lid state is often at offset 0x03 or 0x10 depending on OEM
+    // This is highly system-specific
+    unsafe {
+        let mut cmd_port: Port<u8> = Port::new(EC_SC);
+        cmd_port.write(0x80); // RD_EC command
+
+        // Wait for input buffer empty
+        for _ in 0..10000 {
+            let s: u8 = {
+                let mut port: Port<u8> = Port::new(EC_SC);
+                port.read()
+            };
+            if s & 0x02 == 0 {
+                break;
+            }
+        }
+
+        // Send address
+        let mut data_port: Port<u8> = Port::new(EC_DATA);
+        data_port.write(0x03); // Lid state offset (varies by system)
+
+        // Wait for output buffer full
+        for _ in 0..10000 {
+            let s: u8 = {
+                let mut port: Port<u8> = Port::new(EC_SC);
+                port.read()
+            };
+            if s & 0x01 != 0 {
+                break;
+            }
+        }
+
+        // Read result
+        let result = data_port.read();
+
+        // Bit 0 is often lid state (0 = closed, 1 = open)
+        if result & 0x01 != 0 {
+            Some(LidState::Open)
+        } else {
+            Some(LidState::Closed)
+        }
+    }
+}
+
+/// Handle lid switch events
+pub fn handle_lid_switch() {
+    let mut lid_guard = LID_SWITCH.lock();
+    let lid = match lid_guard.as_mut() {
+        Some(l) if l.present => l,
+        _ => return,
+    };
+
+    // Read current state
+    let current = read_lid_state_internal();
+    if current == LidState::Unknown {
+        return;
+    }
+
+    // Check for state change
+    if current != lid.prev_state {
+        crate::kprintln!("acpi: lid state changed: {:?} -> {:?}", lid.prev_state, current);
+
+        // Update state
+        lid.prev_state = lid.state;
+        lid.state = current;
+
+        // Copy action before dropping the lock
+        let action = if current == LidState::Closed {
+            lid.close_action
+        } else {
+            lid.open_action
+        };
+
+        // Drop lock before performing action
+        drop(lid_guard);
+
+        // Perform action
+        match action {
+            LidAction::None => {}
+            LidAction::Suspend => {
+                crate::kprintln!("acpi: lid closed, suspending...");
+                let _ = suspend_to_ram();
+            }
+            LidAction::Lock => {
+                crate::kprintln!("acpi: lid closed, locking screen");
+                // Notify userspace to lock screen
+            }
+            LidAction::Hibernate => {
+                crate::kprintln!("acpi: lid closed, hibernating...");
+                // Hibernate not implemented
+            }
+            LidAction::Shutdown => {
+                crate::kprintln!("acpi: lid closed, shutting down...");
+                let _ = shutdown();
+            }
+        }
+    }
+}
+
+/// Get current lid state
+pub fn get_lid_state() -> LidState {
+    LID_SWITCH.lock()
+        .as_ref()
+        .map(|l| l.state)
+        .unwrap_or(LidState::Unknown)
+}
+
+/// Check if lid switch is present
+pub fn has_lid_switch() -> bool {
+    LID_SWITCH.lock()
+        .as_ref()
+        .map(|l| l.present)
+        .unwrap_or(false)
+}
+
+/// Set action for lid close
+pub fn set_lid_close_action(action: LidAction) {
+    if let Some(ref mut lid) = *LID_SWITCH.lock() {
+        lid.close_action = action;
+    }
+}
+
+/// Set action for lid open
+pub fn set_lid_open_action(action: LidAction) {
+    if let Some(ref mut lid) = *LID_SWITCH.lock() {
+        lid.open_action = action;
+    }
+}
+
+/// Enable/disable lid as wake source
+pub fn set_lid_wake_enabled(enabled: bool) {
+    if let Some(ref mut lid) = *LID_SWITCH.lock() {
+        lid.wake_enabled = enabled;
+
+        // Enable/disable GPE for lid if using GPE method
+        if let Some(gpe) = lid.gpe_number {
+            if enabled {
+                enable_gpe_wake(gpe);
+            } else {
+                disable_gpe_wake(gpe);
+            }
+        }
+    }
+}
+
+/// Enable GPE as wake source
+fn enable_gpe_wake(_gpe: u8) {
+    // Enable GPE in GPE enable register
+    // This is platform-specific
+}
+
+/// Disable GPE as wake source
+fn disable_gpe_wake(_gpe: u8) {
+    // Disable GPE in GPE enable register
+}
+
+/// Get lid switch info for sysfs
+pub fn sysfs_lid_state() -> String {
+    match get_lid_state() {
+        LidState::Open => String::from("open\n"),
+        LidState::Closed => String::from("closed\n"),
+        LidState::Unknown => String::from("unknown\n"),
+    }
+}
+
+/// Get lid close action for sysfs
+pub fn sysfs_lid_close_action() -> String {
+    let action = LID_SWITCH.lock()
+        .as_ref()
+        .map(|l| l.close_action)
+        .unwrap_or(LidAction::None);
+    format!("{}\n", action.as_str())
+}
+
+/// Set lid close action from sysfs
+pub fn sysfs_set_lid_close_action(s: &str) -> Result<(), &'static str> {
+    let action = LidAction::from_str(s).ok_or("Invalid action")?;
+    set_lid_close_action(action);
+    Ok(())
 }
 
 /// Enter a specific ACPI sleep state

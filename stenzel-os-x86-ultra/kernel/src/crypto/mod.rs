@@ -9,11 +9,14 @@
 
 #![allow(dead_code)]
 
+pub mod aes;
 pub mod sha256;
 pub mod chacha20;
 pub mod x25519;
 pub mod ed25519;
 pub mod rsa;
+pub mod random;
+pub mod luks;
 
 // Re-export commonly used items
 pub use sha256::{sha256, hmac_sha256, hkdf_extract, hkdf_expand, Sha256, Sha256Digest};

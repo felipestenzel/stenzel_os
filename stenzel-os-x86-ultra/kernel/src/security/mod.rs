@@ -10,6 +10,7 @@
 
     pub mod caps;
     pub mod seccomp;
+    pub mod keyring;
     pub use caps::{ProcessCaps, CapSet, Cap, FileCaps};
     pub use seccomp::SeccompState;
 

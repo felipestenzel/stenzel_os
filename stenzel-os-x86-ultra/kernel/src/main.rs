@@ -6,6 +6,7 @@
     extern crate alloc;
 
     mod arch;
+    mod cgroups;
     mod console;
     mod crypto;
     mod drivers;
@@ -32,6 +33,7 @@
     mod tests;
     mod help;
     mod compat;
+    mod power;
     mod util;
 
     use bootloader_api::config::{BootloaderConfig, FrameBuffer, Mapping};
@@ -76,6 +78,7 @@
         mm::init(boot_info);
         mm::vma::init();
         ipc::init();
+        cgroups::init();
 
         // ACPI deve ser inicializado antes do APIC para que o MADT seja usado
         util::kprintln!("boot: detectando ACPI...");

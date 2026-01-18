@@ -212,6 +212,27 @@
         fn write_at(&self, offset: usize, data: &[u8]) -> KResult<usize>;
         fn truncate(&self, size: usize) -> KResult<()>;
         fn size(&self) -> KResult<usize>;
+
+        // xattr ops (extended attributes)
+        /// Get extended attribute value
+        fn getxattr(&self, _name: &str) -> KResult<Vec<u8>> {
+            Err(KError::NotSupported)
+        }
+
+        /// Set extended attribute
+        fn setxattr(&self, _name: &str, _value: Vec<u8>, _flags: super::xattr::XattrFlags) -> KResult<()> {
+            Err(KError::NotSupported)
+        }
+
+        /// Remove extended attribute
+        fn removexattr(&self, _name: &str) -> KResult<()> {
+            Err(KError::NotSupported)
+        }
+
+        /// List extended attribute names
+        fn listxattr(&self) -> KResult<Vec<String>> {
+            Err(KError::NotSupported)
+        }
     }
 
     #[derive(Clone)]
