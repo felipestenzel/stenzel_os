@@ -3,6 +3,8 @@
 //! Provides audio playback and recording capabilities.
 //! Supports Intel HDA (High Definition Audio) controllers.
 //! Includes:
+//! - Audio daemon (PipeWire-like) for central audio management
+//! - PulseAudio-compatible API for Linux applications
 //! - ALSA-compatible API for Linux applications
 //! - Software audio mixer with per-channel volume, pan, and EQ
 
@@ -10,9 +12,15 @@ extern crate alloc;
 
 pub mod ac97;
 pub mod alsa;
+pub mod bluetooth;
+pub mod codecs;
+pub mod daemon;
 pub mod hda;
+pub mod hdmi;
 pub mod mixer;
 pub mod pcspkr;
+pub mod pulse;
+pub mod usb_audio;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -227,6 +235,12 @@ pub fn init() {
     hda::init();
     ac97::init();
     mixer::init();
+    daemon::init();
+    pulse::init();
+    bluetooth::init();
+    usb_audio::init();
+    hdmi::init();
+    codecs::init();
     crate::kprintln!("audio: audio subsystem ready");
 }
 

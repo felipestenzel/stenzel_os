@@ -14,6 +14,8 @@
     pub mod swap;
     pub mod numa;
     pub mod huge_pages;
+    pub mod oom;
+    pub mod zswap;
 
     pub use phys::{BitmapFrameAllocator, BootInfoFrameAllocator};
 
@@ -110,6 +112,26 @@
     /// Aloca um único frame 4KiB.
     pub fn alloc_frame() -> Option<x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>> {
         frame_allocator_lock().allocate()
+    }
+
+    /// Libera um frame 4KiB previamente alocado.
+    pub fn free_frame(frame: x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>) {
+        frame_allocator_lock().deallocate(frame);
+    }
+
+    /// Aloca múltiplos frames 4KiB contíguos.
+    pub fn alloc_frames(count: usize) -> Option<x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>> {
+        frame_allocator_lock().allocate_contiguous(count)
+    }
+
+    /// Libera múltiplos frames 4KiB contíguos.
+    pub fn free_frames(first_frame: x86_64::structures::paging::PhysFrame<x86_64::structures::paging::Size4KiB>, count: usize) {
+        let mut fa = frame_allocator_lock();
+        for i in 0..count {
+            let addr = first_frame.start_address() + (i as u64 * 4096);
+            let frame = x86_64::structures::paging::PhysFrame::containing_address(addr);
+            fa.deallocate(frame);
+        }
     }
 
     /// Mapeia uma região MMIO para acesso do kernel.

@@ -900,3 +900,322 @@ pub fn sys_luks_close(device: &str) -> Result<(), KError> {
 pub fn sys_is_luks(header: &[u8]) -> bool {
     LuksManager::is_luks(header)
 }
+
+// ============================================================================
+// Recovery Keys
+// ============================================================================
+
+/// Recovery key word list (BIP39-like, simplified)
+const RECOVERY_WORDS: &[&str] = &[
+    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
+    "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
+    "across", "action", "actor", "actress", "actual", "adapt", "address", "adjust",
+    "admit", "adult", "advance", "advice", "aerobic", "affair", "afford", "afraid",
+    "again", "agent", "agree", "ahead", "aim", "air", "airport", "aisle", "alarm",
+    "album", "alcohol", "alert", "alien", "all", "alley", "allow", "almost", "alone",
+    "alpha", "already", "also", "alter", "always", "amateur", "amazing", "among",
+    "amount", "amused", "analyst", "anchor", "ancient", "anger", "angle", "angry",
+    "animal", "ankle", "announce", "annual", "another", "answer", "antenna", "antique",
+    "anxiety", "any", "apart", "apology", "appear", "apple", "approve", "april",
+    "arch", "arctic", "area", "arena", "argue", "arm", "armed", "armor", "army",
+    "around", "arrange", "arrest", "arrive", "arrow", "art", "artefact", "artist",
+    "artwork", "ask", "aspect", "assault", "asset", "assist", "assume", "asthma",
+    "athlete", "atom", "attack", "attend", "attitude", "attract", "auction", "audit",
+    "august", "aunt", "author", "auto", "autumn", "average", "avocado", "avoid",
+    "awake", "aware", "away", "awesome", "awful", "awkward", "axis", "baby", "bachelor",
+    "bacon", "badge", "bag", "balance", "balcony", "ball", "bamboo", "banana", "banner",
+    "bar", "barely", "bargain", "barrel", "base", "basic", "basket", "battle", "beach",
+    "bean", "beauty", "because", "become", "beef", "before", "begin", "behave", "behind",
+    "believe", "below", "belt", "bench", "benefit", "best", "betray", "better", "between",
+    "beyond", "bicycle", "bid", "bike", "bind", "biology", "bird", "birth", "bitter",
+    "black", "blade", "blame", "blanket", "blast", "bleak", "bless", "blind", "blood",
+    "blossom", "blouse", "blue", "blur", "blush", "board", "boat", "body", "boil",
+    "bomb", "bone", "bonus", "book", "boost", "border", "boring", "borrow", "boss",
+    "bottom", "bounce", "box", "boy", "bracket", "brain", "brand", "brass", "brave",
+    "bread", "breeze", "brick", "bridge", "brief", "bright", "bring", "brisk", "broccoli",
+    "broken", "bronze", "broom", "brother", "brown", "brush", "bubble", "buddy", "budget",
+    "buffalo", "build", "bulb", "bulk", "bullet", "bundle", "bunker", "burden", "burger",
+    "burst", "bus", "business", "busy", "butter", "buyer", "buzz", "cabbage", "cabin",
+    "cable", "cactus", "cage", "cake", "call", "calm", "camera", "camp", "can", "canal",
+    "cancel", "candy", "cannon", "canoe", "canvas", "canyon", "capable", "capital",
+];
+
+/// Recovery key format
+#[derive(Debug, Clone)]
+pub struct RecoveryKey {
+    /// Recovery words (24 words for 256-bit entropy)
+    pub words: Vec<String>,
+    /// Slot index where this recovery key is stored
+    pub slot_index: usize,
+    /// Hash of the recovery key for verification
+    pub key_hash: [u8; 32],
+}
+
+impl RecoveryKey {
+    /// Generate a new recovery key
+    pub fn generate() -> Self {
+        let mut entropy = [0u8; 32];
+        generate_random_bytes(&mut entropy);
+
+        // Convert entropy to word indices (11 bits per word for 24 words = 264 bits)
+        let mut words = Vec::with_capacity(24);
+        let mut bit_pos = 0;
+
+        for _ in 0..24 {
+            // Extract 11 bits
+            let byte_pos = bit_pos / 8;
+            let bit_offset = bit_pos % 8;
+
+            let mut index: u16 = 0;
+            if byte_pos < entropy.len() {
+                index = (entropy[byte_pos] as u16) >> bit_offset;
+            }
+            if byte_pos + 1 < entropy.len() && bit_offset > 0 {
+                index |= ((entropy[byte_pos + 1] as u16) << (8 - bit_offset)) & 0x7FF;
+            }
+            if byte_pos + 2 < entropy.len() && bit_offset > 5 {
+                index |= ((entropy[byte_pos + 2] as u16) << (16 - bit_offset)) & 0x7FF;
+            }
+            index &= 0x7FF; // 11 bits = max 2047
+
+            // Map to word (mod word list length)
+            let word_idx = (index as usize) % RECOVERY_WORDS.len();
+            words.push(String::from(RECOVERY_WORDS[word_idx]));
+
+            bit_pos += 11;
+        }
+
+        // Calculate key hash
+        let key_bytes = Self::words_to_bytes(&words);
+        let key_hash_vec = sha256(&key_bytes);
+        let mut key_hash = [0u8; 32];
+        key_hash.copy_from_slice(&key_hash_vec);
+
+        Self {
+            words,
+            slot_index: 0, // Will be set when stored
+            key_hash,
+        }
+    }
+
+    /// Create recovery key from words
+    pub fn from_words(words: &[String]) -> Option<Self> {
+        if words.len() != 24 {
+            return None;
+        }
+
+        // Verify all words are valid
+        for word in words {
+            if !RECOVERY_WORDS.contains(&word.as_str()) {
+                return None;
+            }
+        }
+
+        let key_bytes = Self::words_to_bytes(words);
+        let key_hash_vec = sha256(&key_bytes);
+        let mut key_hash = [0u8; 32];
+        key_hash.copy_from_slice(&key_hash_vec);
+
+        Some(Self {
+            words: words.to_vec(),
+            slot_index: 0,
+            key_hash,
+        })
+    }
+
+    /// Convert words to passphrase bytes
+    fn words_to_bytes(words: &[String]) -> Vec<u8> {
+        words.join(" ").into_bytes()
+    }
+
+    /// Get the passphrase for LUKS key slot
+    pub fn as_passphrase(&self) -> Vec<u8> {
+        Self::words_to_bytes(&self.words)
+    }
+
+    /// Display words as groups of 4
+    pub fn display(&self) -> String {
+        let mut output = String::new();
+        for (i, word) in self.words.iter().enumerate() {
+            if i > 0 && i % 4 == 0 {
+                output.push('\n');
+            } else if i > 0 {
+                output.push(' ');
+            }
+            output.push_str(&alloc::format!("{:2}. {}", i + 1, word));
+        }
+        output
+    }
+
+    /// Verify the recovery key matches expected hash
+    pub fn verify(&self, expected_hash: &[u8; 32]) -> bool {
+        self.key_hash == *expected_hash
+    }
+}
+
+/// Recovery key manager
+pub struct RecoveryKeyManager {
+    /// Stored recovery key hashes (device -> hash)
+    pub(crate) stored_hashes: IrqSafeMutex<alloc::collections::BTreeMap<String, RecoveryKeyInfo>>,
+}
+
+/// Stored recovery key info
+#[derive(Clone)]
+struct RecoveryKeyInfo {
+    /// Hash of the recovery key
+    key_hash: [u8; 32],
+    /// LUKS key slot index
+    slot_index: usize,
+    /// Creation timestamp (Unix time)
+    created_at: u64,
+}
+
+impl RecoveryKeyManager {
+    pub fn new() -> Self {
+        Self {
+            stored_hashes: IrqSafeMutex::new(alloc::collections::BTreeMap::new()),
+        }
+    }
+
+    /// Generate and store a recovery key for a LUKS volume
+    pub fn create_recovery_key(
+        &self,
+        volume: &mut LuksVolume,
+    ) -> Result<RecoveryKey, LuksError> {
+        let mut recovery_key = RecoveryKey::generate();
+
+        // Add the recovery key as a new LUKS key slot
+        let slot_index = volume.add_key_slot(&recovery_key.as_passphrase())?;
+        recovery_key.slot_index = slot_index;
+
+        // Store the hash for later verification
+        let info = RecoveryKeyInfo {
+            key_hash: recovery_key.key_hash,
+            slot_index,
+            created_at: crate::time::realtime().tv_sec as u64,
+        };
+        self.stored_hashes.lock().insert(
+            volume.device_name().to_string(),
+            info,
+        );
+
+        Ok(recovery_key)
+    }
+
+    /// Verify a recovery key
+    pub fn verify_recovery_key(
+        &self,
+        device_name: &str,
+        recovery_key: &RecoveryKey,
+    ) -> bool {
+        let hashes = self.stored_hashes.lock();
+        if let Some(info) = hashes.get(device_name) {
+            recovery_key.verify(&info.key_hash)
+        } else {
+            false
+        }
+    }
+
+    /// Use recovery key to unlock a volume
+    pub fn unlock_with_recovery(
+        &self,
+        volume: &mut LuksVolume,
+        words: &[String],
+    ) -> Result<(), LuksError> {
+        let recovery_key = RecoveryKey::from_words(words)
+            .ok_or(LuksError::InvalidPassword)?;
+
+        // Try to unlock with the recovery key passphrase
+        volume.unlock(&recovery_key.as_passphrase())
+    }
+
+    /// Remove a recovery key
+    pub fn remove_recovery_key(
+        &self,
+        volume: &mut LuksVolume,
+        device_name: &str,
+    ) -> Result<(), LuksError> {
+        let mut hashes = self.stored_hashes.lock();
+
+        if let Some(info) = hashes.remove(device_name) {
+            volume.remove_key_slot(info.slot_index)?;
+        }
+
+        Ok(())
+    }
+
+    /// Check if a device has a recovery key
+    pub fn has_recovery_key(&self, device_name: &str) -> bool {
+        self.stored_hashes.lock().contains_key(device_name)
+    }
+
+    /// Get recovery key slot index for a device
+    pub fn get_slot_index(&self, device_name: &str) -> Option<usize> {
+        self.stored_hashes.lock().get(device_name).map(|i| i.slot_index)
+    }
+}
+
+impl Default for RecoveryKeyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Global recovery key manager
+static RECOVERY_MANAGER: Once<RecoveryKeyManager> = Once::new();
+
+/// Initialize recovery key subsystem
+pub fn init_recovery() {
+    RECOVERY_MANAGER.call_once(RecoveryKeyManager::new);
+    crate::kprintln!("luks: Recovery key subsystem initialized");
+}
+
+/// Get the global recovery key manager
+pub fn recovery_manager() -> &'static RecoveryKeyManager {
+    RECOVERY_MANAGER.get().expect("Recovery key manager not initialized")
+}
+
+/// Syscall: Generate recovery key for device
+pub fn sys_create_recovery_key(device: &str) -> Result<RecoveryKey, KError> {
+    // Find the volume and create recovery key
+    let mut volumes = manager().volumes.lock();
+    let volume = volumes.iter_mut()
+        .find(|v| v.device_name() == device)
+        .ok_or(KError::NotFound)?;
+
+    let mut recovery_key = RecoveryKey::generate();
+
+    // Add the recovery key as a new LUKS key slot
+    let slot_index = volume.add_key_slot(&recovery_key.as_passphrase())
+        .map_err(|_| KError::IO)?;
+    recovery_key.slot_index = slot_index;
+
+    // Store the hash for later verification
+    let info = RecoveryKeyInfo {
+        key_hash: recovery_key.key_hash,
+        slot_index,
+        created_at: crate::time::realtime().tv_sec as u64,
+    };
+    recovery_manager().stored_hashes.lock().insert(
+        device.to_string(),
+        info,
+    );
+
+    Ok(recovery_key)
+}
+
+/// Syscall: Unlock volume with recovery key words
+pub fn sys_unlock_with_recovery(device: &str, header: &[u8], words: &[String]) -> Result<(), KError> {
+    let mut volume = LuksVolume::from_header(device, header)
+        .ok_or(KError::Invalid)?;
+
+    recovery_manager().unlock_with_recovery(&mut volume, words)
+        .map_err(|e| match e {
+            LuksError::InvalidPassword => KError::PermissionDenied,
+            _ => KError::IO,
+        })?;
+
+    // Add to open volumes
+    manager().volumes.lock().push(volume);
+    Ok(())
+}

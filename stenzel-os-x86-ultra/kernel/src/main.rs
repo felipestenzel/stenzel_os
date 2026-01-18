@@ -6,6 +6,7 @@
     extern crate alloc;
 
     mod arch;
+    mod boot;
     mod cgroups;
     mod console;
     mod crypto;
@@ -27,6 +28,7 @@
     mod task;
     mod time;
     mod unicode;
+    mod i18n;
     mod userland;
     mod users;
     mod installer;
@@ -34,6 +36,7 @@
     mod help;
     mod compat;
     mod power;
+    mod profiling;
     mod util;
 
     use bootloader_api::config::{BootloaderConfig, FrameBuffer, Mapping};

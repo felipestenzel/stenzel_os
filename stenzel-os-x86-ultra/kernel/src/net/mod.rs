@@ -30,6 +30,7 @@ pub mod ssh;
 pub mod wifi;
 pub mod ntp;
 pub mod ftp;
+pub mod wireguard;
 
 use alloc::vec::Vec;
 use crate::sync::IrqSafeMutex;

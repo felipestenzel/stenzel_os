@@ -26,6 +26,7 @@
     pub mod vfs;
     pub mod xattr;
     pub mod acl;
+    pub mod tuning;
 
     pub use vfs::{Inode, InodeKind, Metadata, Mode, Vfs};
 

@@ -15,6 +15,9 @@ pub mod gpt;
 pub mod mbr;
 pub mod raid;
 pub mod ramdisk;
+pub mod trim;
+pub mod iosched;
+pub mod writecache;
 
 pub use block::{BlockDevice, BlockDeviceId, PartitionBlockDevice};
 
@@ -265,4 +268,97 @@ pub fn get_device(device_id: usize) -> Option<Arc<dyn BlockDevice>> {
 /// Get root partition if available
 pub fn root_partition() -> Option<&'static Arc<dyn BlockDevice>> {
     ROOT_PARTITION.get()
+}
+
+// ============================================================================
+// Disk Discovery API (for installer)
+// ============================================================================
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+/// Information about a discovered disk drive
+#[derive(Debug, Clone)]
+pub struct DiskDriveInfo {
+    pub path: String,
+    pub model: String,
+    pub size_bytes: u64,
+    pub block_size: u32,
+    pub is_ssd: bool,
+    pub is_nvme: bool,
+    pub is_removable: bool,
+}
+
+/// List all available disk drives in the system
+pub fn list_drives() -> Vec<DiskDriveInfo> {
+    let mut drives = Vec::new();
+    let pci_devs = crate::drivers::pci::scan();
+
+    // Check for NVMe drives
+    for d in &pci_devs {
+        if let Some(nvme) = crate::drivers::storage::nvme::probe(d) {
+            if let Ok(dev) = crate::drivers::storage::nvme::init(nvme) {
+                drives.push(DiskDriveInfo {
+                    path: String::from("/dev/nvme0n1"),
+                    model: String::from("NVMe SSD"),
+                    size_bytes: dev.num_blocks() * dev.block_size() as u64,
+                    block_size: dev.block_size(),
+                    is_ssd: true,
+                    is_nvme: true,
+                    is_removable: false,
+                });
+            }
+        }
+    }
+
+    // Check for AHCI/SATA drives
+    for d in &pci_devs {
+        if let Some(ahci) = crate::drivers::storage::ahci::probe(d) {
+            if let Ok(dev) = crate::drivers::storage::ahci::init(ahci) {
+                drives.push(DiskDriveInfo {
+                    path: String::from("/dev/sda"),
+                    model: String::from("SATA Drive"),
+                    size_bytes: dev.num_blocks() * dev.block_size() as u64,
+                    block_size: dev.block_size(),
+                    is_ssd: false, // TODO: Detect via TRIM support
+                    is_nvme: false,
+                    is_removable: false,
+                });
+            }
+        }
+    }
+
+    // Check for virtio-blk (QEMU)
+    for d in &pci_devs {
+        if let Some(vblk) = crate::drivers::storage::virtio_blk::probe(d) {
+            if let Ok(dev) = crate::drivers::storage::virtio_blk::init(vblk) {
+                drives.push(DiskDriveInfo {
+                    path: String::from("/dev/vda"),
+                    model: String::from("VirtIO Block Device"),
+                    size_bytes: dev.num_blocks() * dev.block_size() as u64,
+                    block_size: dev.block_size(),
+                    is_ssd: true,
+                    is_nvme: false,
+                    is_removable: false,
+                });
+            }
+        }
+    }
+
+    drives
+}
+
+/// Get total storage capacity in bytes
+pub fn total_storage_capacity() -> u64 {
+    list_drives().iter().map(|d| d.size_bytes).sum()
+}
+
+/// Check if system has NVMe storage
+pub fn has_nvme() -> bool {
+    list_drives().iter().any(|d| d.is_nvme)
+}
+
+/// Check if system has SATA storage
+pub fn has_sata() -> bool {
+    list_drives().iter().any(|d| !d.is_nvme && !d.path.starts_with("/dev/vd"))
 }

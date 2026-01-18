@@ -11,8 +11,19 @@
     pub mod caps;
     pub mod seccomp;
     pub mod keyring;
+    pub mod secureboot;
+    pub mod tpm;
+    pub mod pam;
+    pub mod sandbox;
+    pub mod permission;
+
     pub use caps::{ProcessCaps, CapSet, Cap, FileCaps};
     pub use seccomp::SeccompState;
+    pub use secureboot::SecureBootMode;
+    pub use tpm::TpmInfo;
+    pub use pam::{PamResult, PamHandle};
+    pub use sandbox::{SandboxProfile, SandboxId};
+    pub use permission::{Permission, PermissionState, PermissionManager};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Uid(pub u32);
