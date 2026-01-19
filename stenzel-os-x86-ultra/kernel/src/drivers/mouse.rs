@@ -371,9 +371,9 @@ pub fn queue_event(x_delta: i16, y_delta: i16, left: bool, right: bool, middle: 
     super::input::report_mouse_move(x_delta as i32, y_delta as i32);
     report_button_changes(left, right, middle);
 
-    // Update GUI compositor cursor and re-render
+    // Update GUI compositor cursor position and render immediately
     crate::gui::compositor::move_cursor(x_delta as i32, y_delta as i32);
-    crate::gui::render();
+    crate::gui::compositor::update_cursor_only();
 }
 
 /// Queue an absolute position event from USB tablet or touchscreen.
@@ -423,9 +423,9 @@ pub fn queue_absolute_event(x_abs: u16, y_abs: u16, left: bool, right: bool, mid
     super::input::report_mouse_move(x_delta, y_delta);
     report_button_changes(left, right, middle);
 
-    // Update GUI compositor cursor position directly and re-render
+    // Update GUI compositor cursor position and render immediately
     crate::gui::compositor::set_cursor_pos(new_x as isize, new_y as isize);
-    crate::gui::render();
+    crate::gui::compositor::update_cursor_only();
 }
 
 /// Obtém a posição atual do cursor.

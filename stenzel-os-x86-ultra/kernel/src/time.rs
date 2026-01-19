@@ -23,8 +23,10 @@ static TZ_DSTTIME: AtomicI32 = AtomicI32::new(0);
 /// Global timezone name
 static TZ_NAME: IrqSafeMutex<Option<String>> = IrqSafeMutex::new(None);
 
-/// Frequência do timer em Hz (100 = 10ms por tick)
-const TIMER_HZ: u64 = 100;
+/// Frequência do timer em Hz
+/// DEVE corresponder à frequência configurada no PIT (arch/x86_64_arch/mod.rs)
+/// PIT está configurado para 1000Hz (1ms) - ideal para cursor/animações suaves
+const TIMER_HZ: u64 = 1000;
 
 /// Nanosegundos por tick
 const NS_PER_TICK: u64 = 1_000_000_000 / TIMER_HZ;
@@ -35,14 +37,10 @@ static BOOT_TIME_SECS: AtomicU64 = AtomicU64::new(1704067200); // 2024-01-01 00:
 
 /// Chamado pelo timer IRQ handler
 pub fn tick() {
-    let t = TICKS.fetch_add(1, Ordering::Relaxed);
+    TICKS.fetch_add(1, Ordering::Relaxed);
 
-    // Poll USB HID devices every tick (10ms at 100Hz)
-    // This is called from interrupt context so we need to be quick
-    if t % 1 == 0 {
-        crate::drivers::usb::hid::poll_keyboards();
-        crate::drivers::usb::hid::poll_mice();
-    }
+    // Poll USB HID devices every tick
+    crate::drivers::usb::hid::poll_all();
 }
 
 /// Retorna ticks desde o boot

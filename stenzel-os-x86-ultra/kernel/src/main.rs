@@ -177,6 +177,11 @@
                 util::kprintln!("boot: init spawned, entrando no scheduler loop...\n");
                 // Loop do scheduler (idle loop)
                 loop {
+                    // Process deferred cursor updates (from mouse movement)
+                    // This is done outside interrupt context for better responsiveness
+                    gui::compositor::process_deferred_cursor();
+
+                    // Halt until next interrupt
                     x86_64::instructions::hlt();
                 }
             }

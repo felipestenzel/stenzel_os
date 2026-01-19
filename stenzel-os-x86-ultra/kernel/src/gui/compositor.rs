@@ -15,6 +15,13 @@ use super::window::{Window, WindowId};
 /// Global compositor instance
 static COMPOSITOR: Mutex<Option<Compositor>> = Mutex::new(None);
 
+/// Flag indicating cursor needs update (for deferred rendering outside interrupt context)
+static CURSOR_DIRTY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Cursor dimensions (width x height)
+const CURSOR_WIDTH: usize = 13;
+const CURSOR_HEIGHT: usize = 19;
+
 /// The compositor state
 pub struct Compositor {
     /// All managed windows (by ID)
@@ -43,6 +50,14 @@ pub struct Compositor {
     cursor_y: isize,
     /// Whether cursor is visible
     cursor_visible: bool,
+    /// Saved background under cursor (for cursor overlay optimization)
+    cursor_background: Vec<Color>,
+    /// Last cursor X position (where background was saved)
+    cursor_last_x: isize,
+    /// Last cursor Y position (where background was saved)
+    cursor_last_y: isize,
+    /// Whether cursor background is valid
+    cursor_bg_valid: bool,
 }
 
 impl Compositor {
@@ -69,21 +84,169 @@ impl Compositor {
             cursor_x: (screen_width / 2) as isize,
             cursor_y: (screen_height / 2) as isize,
             cursor_visible: true,
+            cursor_background: alloc::vec![Color::BLACK; CURSOR_WIDTH * CURSOR_HEIGHT],
+            cursor_last_x: (screen_width / 2) as isize,
+            cursor_last_y: (screen_height / 2) as isize,
+            cursor_bg_valid: false,
         }
     }
 
-    /// Move cursor by relative amount
+    /// Move cursor by relative amount (does NOT trigger full redraw)
     pub fn move_cursor(&mut self, dx: i32, dy: i32) {
         self.cursor_x = (self.cursor_x + dx as isize).clamp(0, self.screen_width as isize - 1);
         self.cursor_y = (self.cursor_y + dy as isize).clamp(0, self.screen_height as isize - 1);
-        self.needs_full_redraw = true;
+        // Note: cursor movement no longer triggers full redraw
+        // Use update_cursor_only() for efficient cursor updates
     }
 
-    /// Set cursor position
+    /// Set cursor position (does NOT trigger full redraw)
     pub fn set_cursor_pos(&mut self, x: isize, y: isize) {
         self.cursor_x = x.clamp(0, self.screen_width as isize - 1);
         self.cursor_y = y.clamp(0, self.screen_height as isize - 1);
-        self.needs_full_redraw = true;
+        // Note: cursor movement no longer triggers full redraw
+        // Use update_cursor_only() for efficient cursor updates
+    }
+
+    /// Save the background under the cursor from the back buffer
+    fn save_cursor_background(&mut self) {
+        let cx = self.cursor_x as usize;
+        let cy = self.cursor_y as usize;
+
+        for row in 0..CURSOR_HEIGHT {
+            for col in 0..CURSOR_WIDTH {
+                let px = cx + col;
+                let py = cy + row;
+                let idx = row * CURSOR_WIDTH + col;
+                if px < self.screen_width && py < self.screen_height {
+                    self.cursor_background[idx] = self.back_buffer.get_pixel(px, py)
+                        .unwrap_or(self.background_color);
+                } else {
+                    self.cursor_background[idx] = self.background_color;
+                }
+            }
+        }
+
+        self.cursor_last_x = self.cursor_x;
+        self.cursor_last_y = self.cursor_y;
+        self.cursor_bg_valid = true;
+    }
+
+    /// Restore the saved background to the back buffer
+    fn restore_cursor_background(&mut self) {
+        if !self.cursor_bg_valid {
+            return;
+        }
+
+        let cx = self.cursor_last_x as usize;
+        let cy = self.cursor_last_y as usize;
+
+        for row in 0..CURSOR_HEIGHT {
+            for col in 0..CURSOR_WIDTH {
+                let px = cx + col;
+                let py = cy + row;
+                let idx = row * CURSOR_WIDTH + col;
+                if px < self.screen_width && py < self.screen_height {
+                    self.back_buffer.set_pixel(px, py, self.cursor_background[idx]);
+                }
+            }
+        }
+    }
+
+    /// Update cursor position efficiently (restore old bg, save new bg, draw cursor)
+    /// This modifies the back buffer but does NOT present to screen
+    pub fn update_cursor_in_backbuffer(&mut self) {
+        if !self.cursor_visible {
+            return;
+        }
+
+        // 1. Restore old background (erase cursor from old position)
+        self.restore_cursor_background();
+
+        // 2. Save new background at new cursor position
+        self.save_cursor_background();
+
+        // 3. Draw cursor at new position
+        let cx = self.cursor_x as usize;
+        let cy = self.cursor_y as usize;
+        let sw = self.screen_width;
+        let sh = self.screen_height;
+        Self::draw_cursor_at(&mut self.back_buffer, cx, cy, sw, sh);
+    }
+
+    /// Present only the cursor regions to the framebuffer (fast path)
+    /// This copies only the old and new cursor areas, not the entire screen
+    /// old_x/old_y are the coordinates where the cursor WAS (before move)
+    fn present_cursor_only_at(&self, old_x: isize, old_y: isize) {
+        if !self.enabled {
+            return;
+        }
+
+        framebuffer::with_framebuffer(|fb| {
+            // Present old cursor region (now restored background)
+            let ox = old_x.max(0) as usize;
+            let oy = old_y.max(0) as usize;
+            Self::present_region(&self.back_buffer, fb, ox, oy, CURSOR_WIDTH, CURSOR_HEIGHT);
+
+            // Present new cursor region (if different from old)
+            let new_x = self.cursor_x.max(0) as usize;
+            let new_y = self.cursor_y.max(0) as usize;
+            if new_x != ox || new_y != oy {
+                Self::present_region(&self.back_buffer, fb, new_x, new_y, CURSOR_WIDTH, CURSOR_HEIGHT);
+            }
+        });
+    }
+
+    /// Helper: copy a region from back buffer to framebuffer
+    /// Optimized to copy row by row for better cache locality
+    fn present_region(
+        back_buffer: &Surface,
+        fb: &mut framebuffer::FrameBufferState,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) {
+        let fb_width = fb.width();
+        let fb_height = fb.height();
+        let bb_width = back_buffer.width();
+        let bb_height = back_buffer.height();
+
+        // Clamp region to valid bounds
+        let actual_width = width.min(fb_width.saturating_sub(x)).min(bb_width.saturating_sub(x));
+        let actual_height = height.min(fb_height.saturating_sub(y)).min(bb_height.saturating_sub(y));
+
+        if actual_width == 0 || actual_height == 0 {
+            return;
+        }
+
+        // Fast path: copy pixel by pixel but without bounds checking per pixel
+        for row in 0..actual_height {
+            let py = y + row;
+            for col in 0..actual_width {
+                let px = x + col;
+                // Both are guaranteed in bounds due to clamping above
+                if let Some(color) = back_buffer.get_pixel(px, py) {
+                    fb.set_pixel(px, py, color);
+                }
+            }
+        }
+    }
+
+    /// Efficient cursor-only update: update back buffer and present cursor regions only
+    pub fn update_cursor_only(&mut self) {
+        if !self.enabled || !self.cursor_visible {
+            return;
+        }
+
+        // CRITICAL: Save old position BEFORE update_cursor_in_backbuffer() changes cursor_last_x/y
+        let old_x = self.cursor_last_x;
+        let old_y = self.cursor_last_y;
+
+        // This updates cursor_last_x/y to the new position
+        self.update_cursor_in_backbuffer();
+
+        // Present using the saved old position
+        self.present_cursor_only_at(old_x, old_y);
     }
 
     /// Get cursor position
@@ -313,8 +476,12 @@ impl Compositor {
             }
         }
 
-        // Draw cursor on top of everything
+        // Draw cursor on top of everything using the overlay system
         if self.cursor_visible {
+            // Save background at cursor position BEFORE drawing cursor
+            // This initializes the cursor overlay for subsequent cursor-only updates
+            self.save_cursor_background();
+
             let cx = self.cursor_x as usize;
             let cy = self.cursor_y as usize;
             let sw = self.screen_width;
@@ -623,4 +790,32 @@ pub fn set_enabled(enabled: bool) {
 /// Check if compositor is available
 pub fn is_available() -> bool {
     COMPOSITOR.lock().is_some()
+}
+
+/// Efficient cursor-only update (for mouse movement)
+/// This only updates the cursor regions instead of doing a full compose+present
+pub fn update_cursor_only() {
+    let mut comp = COMPOSITOR.lock();
+    if let Some(ref mut c) = *comp {
+        c.update_cursor_only();
+    }
+}
+
+/// Mark cursor as needing update (for deferred rendering)
+/// Use this from interrupt context instead of update_cursor_only()
+pub fn mark_cursor_dirty() {
+    CURSOR_DIRTY.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// Process deferred cursor update if needed
+/// Call this from the main loop or idle task (outside interrupt context)
+pub fn process_deferred_cursor() {
+    if CURSOR_DIRTY.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        update_cursor_only();
+    }
+}
+
+/// Check if cursor needs update
+pub fn is_cursor_dirty() -> bool {
+    CURSOR_DIRTY.load(core::sync::atomic::Ordering::Acquire)
 }
