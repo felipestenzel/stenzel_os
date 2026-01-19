@@ -13,6 +13,7 @@ pub mod tabs;
 pub mod downloads;
 pub mod network;
 pub mod bookmarks;
+pub mod extensions;
 pub mod history;
 pub mod passwords;
 pub mod webrtc;

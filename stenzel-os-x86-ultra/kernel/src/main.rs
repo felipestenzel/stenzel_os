@@ -37,6 +37,7 @@
     mod compat;
     mod power;
     mod profiling;
+    mod cloud;
     mod util;
 
     use bootloader_api::config::{BootloaderConfig, FrameBuffer, Mapping};
@@ -68,8 +69,6 @@
         if let Some(framebuffer) = boot_info.framebuffer.take() {
             util::kprintln!("boot: inicializando GOP framebuffer...");
             drivers::framebuffer::init(framebuffer);
-            // Draw a test pattern to confirm it's working
-            drivers::framebuffer::draw_test_pattern();
         } else {
             util::kprintln!("boot: GOP framebuffer not available");
         }
@@ -115,6 +114,9 @@
 
         util::kprintln!("boot: inicializando input event system...");
         drivers::input::init();
+
+        util::kprintln!("boot: inicializando GUI subsystem...");
+        gui::init();
 
         util::kprintln!("boot: inicializando segurança/usuários...");
         security::init();

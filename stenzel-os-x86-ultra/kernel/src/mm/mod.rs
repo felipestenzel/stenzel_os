@@ -16,6 +16,10 @@
     pub mod huge_pages;
     pub mod oom;
     pub mod zswap;
+    pub mod boot_cache;
+    pub mod readahead;
+    pub mod ksm;
+    pub mod memcg;
 
     pub use phys::{BitmapFrameAllocator, BootInfoFrameAllocator};
 

@@ -14,11 +14,20 @@
     pub mod secureboot;
     pub mod mok;
     pub mod tpm;
+    pub mod tpm_keys;
+    pub mod tpm_disk_unlock;
+    pub mod auto_unlock;
+    pub mod encrypted_home;
     pub mod pam;
     pub mod sandbox;
     pub mod permission;
     pub mod measured_boot;
     pub mod pam_fprintd;
+    pub mod fido2;
+    pub mod password_policy;
+    pub mod portal;
+    pub mod mac;
+    pub mod verified_boot;
 
     pub use caps::{ProcessCaps, CapSet, Cap, FileCaps};
     pub use seccomp::SeccompState;

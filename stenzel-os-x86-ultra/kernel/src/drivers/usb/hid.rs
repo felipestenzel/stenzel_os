@@ -125,6 +125,40 @@ impl BootMouseReport {
     }
 }
 
+/// USB Tablet Report (absolute coordinates)
+/// QEMU usb-tablet format: buttons (1 byte), x_abs (2 bytes LE), y_abs (2 bytes LE)
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TabletReport {
+    pub buttons: u8,
+    pub x_abs_lo: u8,
+    pub x_abs_hi: u8,
+    pub y_abs_lo: u8,
+    pub y_abs_hi: u8,
+}
+
+impl TabletReport {
+    pub fn left_button(&self) -> bool {
+        (self.buttons & 0x01) != 0
+    }
+
+    pub fn right_button(&self) -> bool {
+        (self.buttons & 0x02) != 0
+    }
+
+    pub fn middle_button(&self) -> bool {
+        (self.buttons & 0x04) != 0
+    }
+
+    pub fn x_abs(&self) -> u16 {
+        (self.x_abs_lo as u16) | ((self.x_abs_hi as u16) << 8)
+    }
+
+    pub fn y_abs(&self) -> u16 {
+        (self.y_abs_lo as u16) | ((self.y_abs_hi as u16) << 8)
+    }
+}
+
 /// USB HID Device
 #[derive(Debug)]
 pub struct HidDevice {
@@ -322,10 +356,15 @@ pub fn register_device(device: HidDevice) {
             keyboards.push(keyboard);
         }
         HidProtocol::Mouse => {
+            // USB tablets report as HID mice but use absolute positioning
+            // Detect tablets by max_packet_size (tablets typically need 5+ bytes)
+            let is_tablet = device.max_packet_size >= 5;
             crate::kprintln!(
-                "usb-hid: mouse registered (slot {}, endpoint {})",
+                "usb-hid: {} registered (slot {}, endpoint {}, max_pkt={})",
+                if is_tablet { "tablet" } else { "mouse" },
                 device.slot_id,
-                device.endpoint_number
+                device.endpoint_number,
+                device.max_packet_size
             );
             let mouse = HidMouse::new(HidDevice {
                 slot_id: device.slot_id,
@@ -337,8 +376,43 @@ pub fn register_device(device: HidDevice) {
             });
             let mut mice = HID_MICE.lock();
             mice.push(mouse);
+            // Track tablet status
+            let mut tablets = MOUSE_IS_TABLET.lock();
+            tablets.push(is_tablet);
         }
-        _ => {}
+        HidProtocol::None => {
+            // Unknown protocol - try to detect device type from max_packet_size
+            // USB tablets (like QEMU's usb-tablet) use protocol 0 with larger packets
+            // Tablets need at least 5 bytes: buttons (1) + x_abs (2) + y_abs (2)
+            if device.max_packet_size >= 5 {
+                crate::kprintln!(
+                    "usb-hid: tablet detected via packet size (slot {}, endpoint {}, max_pkt={})",
+                    device.slot_id,
+                    device.endpoint_number,
+                    device.max_packet_size
+                );
+                let mouse = HidMouse::new(HidDevice {
+                    slot_id: device.slot_id,
+                    interface_number: device.interface_number,
+                    protocol: HidProtocol::Mouse, // Treat as mouse for polling
+                    endpoint_number: device.endpoint_number,
+                    endpoint_interval: device.endpoint_interval,
+                    max_packet_size: device.max_packet_size,
+                });
+                let mut mice = HID_MICE.lock();
+                mice.push(mouse);
+                // Mark as tablet for absolute coordinate handling
+                let mut tablets = MOUSE_IS_TABLET.lock();
+                tablets.push(true);
+            } else {
+                crate::kprintln!(
+                    "usb-hid: unknown HID device (slot {}, endpoint {}, protocol=0, max_pkt={})",
+                    device.slot_id,
+                    device.endpoint_number,
+                    device.max_packet_size
+                );
+            }
+        }
     }
 
     devices.push(device);
@@ -401,8 +475,10 @@ static KEYBOARD_BUFFERS: Mutex<Vec<[u8; 8]>> = Mutex::new(Vec::new());
 /// Pending keyboard polls (slot_id, endpoint_num)
 static PENDING_KEYBOARD_POLLS: Mutex<Vec<(u8, u8)>> = Mutex::new(Vec::new());
 
-/// Mouse report buffer for each registered mouse
-static MOUSE_BUFFERS: Mutex<Vec<[u8; 4]>> = Mutex::new(Vec::new());
+/// Mouse report buffer for each registered mouse (6 bytes to support tablets too)
+static MOUSE_BUFFERS: Mutex<Vec<[u8; 8]>> = Mutex::new(Vec::new());
+/// Track which mice are actually tablets (absolute positioning)
+static MOUSE_IS_TABLET: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 /// Pending mouse polls (slot_id, endpoint_num)
 static PENDING_MOUSE_POLLS: Mutex<Vec<(u8, u8)>> = Mutex::new(Vec::new());
 
@@ -461,9 +537,9 @@ fn queue_mouse_polls() {
         let mut buffers = MOUSE_BUFFERS.lock();
         let mut pending = PENDING_MOUSE_POLLS.lock();
 
-        // Ensure we have enough buffers
+        // Ensure we have enough buffers (8 bytes each to support tablets)
         while buffers.len() < mice.len() {
-            buffers.push([0u8; 4]);
+            buffers.push([0u8; 8]);
         }
 
         // Debug: show that polling is active
@@ -496,122 +572,141 @@ fn queue_mouse_polls() {
 /// Debug: track number of keyboard reports received
 static KEYBOARD_REPORT_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Poll all registered HID keyboards and send scancodes to kernel keyboard driver
-pub fn poll_keyboards() {
-    // First, queue any keyboard polls that aren't pending
-    queue_keyboard_polls();
+/// Debug: track number of mouse reports received
+static MOUSE_REPORT_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-    // Check for completed transfers
+/// Unified poll function that handles both keyboards and mice from the same event ring.
+/// This prevents the race condition where poll_keyboards could consume mouse events.
+pub fn poll_all() {
+    // Queue transfers for all devices
+    queue_keyboard_polls();
+    queue_mouse_polls();
+
+    // Process all completed transfers from the single event ring
     if let Some(ctrl_arc) = super::xhci::controller() {
         let ctrl = ctrl_arc.lock();
 
         while let Some((slot_id, ep_id, _residual)) = ctrl.poll_interrupt_transfer() {
-            // Check if this is a keyboard transfer
-            let mut pending = PENDING_KEYBOARD_POLLS.lock();
-            let mut keyboards = HID_KEYBOARDS.lock();
-            let buffers = KEYBOARD_BUFFERS.lock();
-
-            // Find which keyboard this transfer belongs to
-            // ep_id is the endpoint context index, endpoint_num = (ep_id - 1) / 2 for IN
             let endpoint_num = if ep_id > 0 { (ep_id - 1) / 2 } else { 0 };
 
-            if let Some(pos) = pending.iter().position(|(s, e)| *s == slot_id && *e == endpoint_num) {
-                pending.remove(pos);
+            // Try to match as a keyboard first
+            {
+                let mut pending = PENDING_KEYBOARD_POLLS.lock();
+                if let Some(pos) = pending.iter().position(|(s, e)| *s == slot_id && *e == endpoint_num) {
+                    pending.remove(pos);
+                    drop(pending);
 
-                // Find the keyboard with this slot/endpoint
-                for (i, kb) in keyboards.iter_mut().enumerate() {
-                    if kb.device.slot_id == slot_id && kb.device.endpoint_number == endpoint_num {
-                        // Parse the keyboard report
-                        let report = BootKeyboardReport {
-                            modifiers: buffers[i][0],
-                            reserved: buffers[i][1],
-                            keys: [
-                                buffers[i][2],
-                                buffers[i][3],
-                                buffers[i][4],
-                                buffers[i][5],
-                                buffers[i][6],
-                                buffers[i][7],
-                            ],
-                        };
+                    let mut keyboards = HID_KEYBOARDS.lock();
+                    let buffers = KEYBOARD_BUFFERS.lock();
 
-                        // Debug: log keyboard reports (first 5 only to avoid spam)
-                        let count = KEYBOARD_REPORT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                        if count < 5 {
-                            crate::kprintln!(
-                                "usb-hid: keyboard report #{}: mods={:#x} keys=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
-                                count + 1,
-                                report.modifiers,
-                                report.keys[0], report.keys[1], report.keys[2],
-                                report.keys[3], report.keys[4], report.keys[5]
-                            );
+                    for (i, kb) in keyboards.iter_mut().enumerate() {
+                        if kb.device.slot_id == slot_id && kb.device.endpoint_number == endpoint_num {
+                            let report = BootKeyboardReport {
+                                modifiers: buffers[i][0],
+                                reserved: buffers[i][1],
+                                keys: [
+                                    buffers[i][2],
+                                    buffers[i][3],
+                                    buffers[i][4],
+                                    buffers[i][5],
+                                    buffers[i][6],
+                                    buffers[i][7],
+                                ],
+                            };
+
+                            let count = KEYBOARD_REPORT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                            if count < 5 {
+                                crate::kprintln!(
+                                    "usb-hid: keyboard report #{}: mods={:#x} keys=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
+                                    count + 1,
+                                    report.modifiers,
+                                    report.keys[0], report.keys[1], report.keys[2],
+                                    report.keys[3], report.keys[4], report.keys[5]
+                                );
+                            }
+
+                            let scancodes = kb.process_report(&report);
+                            for scancode in &scancodes {
+                                crate::drivers::keyboard::process_scancode(*scancode);
+                            }
+                            break;
                         }
-
-                        // Process the report and get scancodes
-                        let scancodes = kb.process_report(&report);
-
-                        // Inject scancodes into the keyboard driver
-                        for scancode in &scancodes {
-                            crate::drivers::keyboard::process_scancode(*scancode);
-                        }
-
-                        break;
                     }
+                    continue;
+                }
+            }
+
+            // Try to match as a mouse/tablet
+            {
+                let mut pending = PENDING_MOUSE_POLLS.lock();
+                if let Some(pos) = pending.iter().position(|(s, e)| *s == slot_id && *e == endpoint_num) {
+                    pending.remove(pos);
+                    drop(pending);
+
+                    let mut mice = HID_MICE.lock();
+                    let buffers = MOUSE_BUFFERS.lock();
+                    let tablets = MOUSE_IS_TABLET.lock();
+
+                    for (i, mouse) in mice.iter_mut().enumerate() {
+                        if mouse.device.slot_id == slot_id && mouse.device.endpoint_number == endpoint_num {
+                            let is_tablet = tablets.get(i).copied().unwrap_or(false);
+                            let buttons = buffers[i][0];
+                            let left = (buttons & 0x01) != 0;
+                            let right = (buttons & 0x02) != 0;
+                            let middle = (buttons & 0x04) != 0;
+
+                            if is_tablet {
+                                // Tablet: absolute coordinates (2 bytes each, little-endian)
+                                let x_abs = (buffers[i][1] as u16) | ((buffers[i][2] as u16) << 8);
+                                let y_abs = (buffers[i][3] as u16) | ((buffers[i][4] as u16) << 8);
+
+                                crate::drivers::mouse::queue_absolute_event(
+                                    x_abs,
+                                    y_abs,
+                                    left,
+                                    right,
+                                    middle,
+                                );
+                            } else {
+                                // Mouse: relative coordinates
+                                let x_delta = buffers[i][1] as i8;
+                                let y_delta = buffers[i][2] as i8;
+
+                                let report = BootMouseReport {
+                                    buttons,
+                                    x_delta,
+                                    y_delta,
+                                };
+                                mouse.process_report(&report);
+                                crate::drivers::mouse::queue_event(
+                                    x_delta as i16,
+                                    -(y_delta as i16),
+                                    left,
+                                    right,
+                                    middle,
+                                );
+                            }
+                            break;
+                        }
+                    }
+                    continue;
                 }
             }
         }
     }
 }
 
+/// Poll all registered HID keyboards and send scancodes to kernel keyboard driver
+/// (Deprecated: use poll_all() instead to avoid race conditions)
+pub fn poll_keyboards() {
+    // Just call the unified poll function
+    poll_all();
+}
+
 /// Poll all registered HID mice and send events to kernel mouse driver
+/// (Deprecated: use poll_all() instead to avoid race conditions)
 pub fn poll_mice() {
-    // First, queue any mouse polls that aren't pending
-    queue_mouse_polls();
-
-    // Check for completed transfers
-    if let Some(ctrl_arc) = super::xhci::controller() {
-        let ctrl = ctrl_arc.lock();
-
-        while let Some((slot_id, ep_id, _residual)) = ctrl.poll_interrupt_transfer() {
-            // Check if this is a mouse transfer
-            let mut pending = PENDING_MOUSE_POLLS.lock();
-            let mut mice = HID_MICE.lock();
-            let buffers = MOUSE_BUFFERS.lock();
-
-            let endpoint_num = if ep_id > 0 { (ep_id - 1) / 2 } else { 0 };
-
-            if let Some(pos) = pending.iter().position(|(s, e)| *s == slot_id && *e == endpoint_num) {
-                pending.remove(pos);
-
-                // Find the mouse with this slot/endpoint
-                for (i, mouse) in mice.iter_mut().enumerate() {
-                    if mouse.device.slot_id == slot_id && mouse.device.endpoint_number == endpoint_num {
-                        // Parse the mouse report
-                        let report = BootMouseReport {
-                            buttons: buffers[i][0],
-                            x_delta: buffers[i][1] as i8,
-                            y_delta: buffers[i][2] as i8,
-                        };
-
-                        // Process the report
-                        mouse.process_report(&report);
-
-                        // Send mouse event to unified mouse driver
-                        crate::drivers::mouse::queue_event(
-                            report.x_delta as i16,
-                            // USB mouse Y axis is opposite to PS/2 convention
-                            -(report.y_delta as i16),
-                            report.left_button(),
-                            report.right_button(),
-                            report.middle_button(),
-                        );
-
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    // No-op: poll_keyboards already calls poll_all which handles both
 }
 
 /// Initialize HID subsystem

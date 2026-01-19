@@ -9,10 +9,12 @@
 extern crate alloc;
 
 pub mod a2dp;
+pub mod ble;
 pub mod hci;
 pub mod hid;
 pub mod l2cap;
 pub mod pairing;
+pub mod realtek;
 pub mod usb_transport;
 
 use alloc::string::String;

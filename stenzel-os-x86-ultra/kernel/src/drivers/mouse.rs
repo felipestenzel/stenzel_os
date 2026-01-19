@@ -370,6 +370,62 @@ pub fn queue_event(x_delta: i16, y_delta: i16, left: bool, right: bool, middle: 
     // Report to input event system
     super::input::report_mouse_move(x_delta as i32, y_delta as i32);
     report_button_changes(left, right, middle);
+
+    // Update GUI compositor cursor and re-render
+    crate::gui::compositor::move_cursor(x_delta as i32, y_delta as i32);
+    crate::gui::render();
+}
+
+/// Queue an absolute position event from USB tablet or touchscreen.
+/// x_abs and y_abs are in the range 0-32767 and need to be scaled to screen coordinates.
+pub fn queue_absolute_event(x_abs: u16, y_abs: u16, left: bool, right: bool, middle: bool) {
+    // Get current screen size for scaling
+    let (screen_w, screen_h) = crate::gui::compositor::screen_size()
+        .unwrap_or((SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize));
+
+    // Scale absolute coordinates (0-32767) to screen coordinates
+    let new_x = ((x_abs as usize * screen_w) / 32768) as i32;
+    let new_y = ((y_abs as usize * screen_h) / 32768) as i32;
+
+    // Calculate delta from current position
+    let (old_x, old_y) = {
+        let pos = CURSOR_POS.lock();
+        (pos.x, pos.y)
+    };
+
+    let x_delta = new_x - old_x;
+    let y_delta = new_y - old_y;
+
+    // Update cursor position directly (absolute)
+    {
+        let mut pos = CURSOR_POS.lock();
+        pos.x = new_x.clamp(0, (screen_w as i32).saturating_sub(1));
+        pos.y = new_y.clamp(0, (screen_h as i32).saturating_sub(1));
+    }
+
+    // Create event with calculated delta
+    let event = MouseEvent {
+        x_delta: x_delta as i16,
+        y_delta: y_delta as i16,
+        left_button: left,
+        right_button: right,
+        middle_button: middle,
+    };
+
+    // Add to event buffer
+    let mut buf = EVENT_BUFFER.lock();
+    if buf.len() < BUFFER_CAPACITY {
+        buf.push_back(event);
+    }
+    drop(buf);
+
+    // Report to input event system
+    super::input::report_mouse_move(x_delta, y_delta);
+    report_button_changes(left, right, middle);
+
+    // Update GUI compositor cursor position directly and re-render
+    crate::gui::compositor::set_cursor_pos(new_x as isize, new_y as isize);
+    crate::gui::render();
 }
 
 /// Obtém a posição atual do cursor.

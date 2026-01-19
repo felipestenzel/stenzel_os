@@ -44,7 +44,7 @@ fn main() -> anyhow::Result<()> {
         "-device",
         "usb-kbd,bus=xhci.0,port=2",
         "-device",
-        "usb-mouse,bus=xhci.0,port=3",
+        "usb-tablet,bus=xhci.0,port=3",
         "-serial",
         "stdio",
         "-no-reboot",

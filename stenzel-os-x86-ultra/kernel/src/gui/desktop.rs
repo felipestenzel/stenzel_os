@@ -484,3 +484,23 @@ where
 pub fn is_available() -> bool {
     DESKTOP.lock().is_some()
 }
+
+/// Render the desktop (wallpaper + icons) to a target surface
+pub fn render_to(target: &mut super::surface::Surface) {
+    let desktop = DESKTOP.lock();
+    if let Some(ref d) = *desktop {
+        // Copy wallpaper
+        let wp = d.wallpaper_surface();
+        for y in 0..wp.height().min(target.height()) {
+            for x in 0..wp.width().min(target.width()) {
+                if let Some(color) = wp.get_pixel(x, y) {
+                    target.set_pixel(x, y, color);
+                }
+            }
+        }
+        // Render icons on top
+        for icon in d.icons() {
+            d.render_icon(icon, target);
+        }
+    }
+}

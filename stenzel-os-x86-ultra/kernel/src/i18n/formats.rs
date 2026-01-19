@@ -330,6 +330,487 @@ impl CurrencyFormat {
         }
     }
 
+    /// Chinese Yuan format (¥1,234.56)
+    pub fn cny() -> Self {
+        Self {
+            symbol: "¥".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Korean Won format (₩1,234)
+    pub fn krw() -> Self {
+        Self {
+            symbol: "₩".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 0, // Won has no decimals
+        }
+    }
+
+    /// Indian Rupee format (₹1,23,456.78)
+    pub fn inr() -> Self {
+        Self {
+            symbol: "₹".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat {
+                decimal_separator: '.',
+                thousands_separator: ',',
+                grouping: 2, // Indian grouping: 1,23,456
+                min_integer_digits: 1,
+                min_fraction_digits: 0,
+                max_fraction_digits: 2,
+            },
+            decimal_places: 2,
+        }
+    }
+
+    /// Swiss Franc format (CHF 1'234.56)
+    pub fn chf() -> Self {
+        Self {
+            symbol: "CHF".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: true,
+            number_format: NumberFormat {
+                decimal_separator: '.',
+                thousands_separator: '\'',
+                grouping: 3,
+                min_integer_digits: 1,
+                min_fraction_digits: 0,
+                max_fraction_digits: 2,
+            },
+            decimal_places: 2,
+        }
+    }
+
+    /// Canadian Dollar format (CA$1,234.56)
+    pub fn cad() -> Self {
+        Self {
+            symbol: "CA$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Australian Dollar format (A$1,234.56)
+    pub fn aud() -> Self {
+        Self {
+            symbol: "A$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Mexican Peso format ($1,234.56 MXN)
+    pub fn mxn() -> Self {
+        Self {
+            symbol: "$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Russian Ruble format (1 234,56 ₽)
+    pub fn rub() -> Self {
+        Self {
+            symbol: "₽".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Turkish Lira format (₺1.234,56)
+    pub fn try_lira() -> Self {
+        Self {
+            symbol: "₺".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::european(),
+            decimal_places: 2,
+        }
+    }
+
+    /// South African Rand format (R1 234,56)
+    pub fn zar() -> Self {
+        Self {
+            symbol: "R".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Polish Zloty format (1 234,56 zł)
+    pub fn pln() -> Self {
+        Self {
+            symbol: "zł".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Swedish Krona format (1 234,56 kr)
+    pub fn sek() -> Self {
+        Self {
+            symbol: "kr".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Norwegian Krone format (kr 1 234,56)
+    pub fn nok() -> Self {
+        Self {
+            symbol: "kr".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Danish Krone format (1.234,56 kr.)
+    pub fn dkk() -> Self {
+        Self {
+            symbol: "kr.".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::european(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Singapore Dollar format (S$1,234.56)
+    pub fn sgd() -> Self {
+        Self {
+            symbol: "S$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Hong Kong Dollar format (HK$1,234.56)
+    pub fn hkd() -> Self {
+        Self {
+            symbol: "HK$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// New Zealand Dollar format (NZ$1,234.56)
+    pub fn nzd() -> Self {
+        Self {
+            symbol: "NZ$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Thai Baht format (฿1,234.56)
+    pub fn thb() -> Self {
+        Self {
+            symbol: "฿".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Indonesian Rupiah format (Rp1.234)
+    pub fn idr() -> Self {
+        Self {
+            symbol: "Rp".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::european(),
+            decimal_places: 0,
+        }
+    }
+
+    /// Malaysian Ringgit format (RM1,234.56)
+    pub fn myr() -> Self {
+        Self {
+            symbol: "RM".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Philippine Peso format (₱1,234.56)
+    pub fn php() -> Self {
+        Self {
+            symbol: "₱".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Vietnamese Dong format (1.234 ₫)
+    pub fn vnd() -> Self {
+        Self {
+            symbol: "₫".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::european(),
+            decimal_places: 0,
+        }
+    }
+
+    /// Saudi Riyal format (1,234.56 SAR)
+    pub fn sar() -> Self {
+        Self {
+            symbol: "SAR".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// UAE Dirham format (1,234.56 AED)
+    pub fn aed() -> Self {
+        Self {
+            symbol: "AED".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Israeli Shekel format (₪1,234.56)
+    pub fn ils() -> Self {
+        Self {
+            symbol: "₪".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Egyptian Pound format (1,234.56 E£)
+    pub fn egp() -> Self {
+        Self {
+            symbol: "E£".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Nigerian Naira format (₦1,234.56)
+    pub fn ngn() -> Self {
+        Self {
+            symbol: "₦".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Argentine Peso format ($1.234,56)
+    pub fn ars() -> Self {
+        Self {
+            symbol: "$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::european(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Colombian Peso format ($1.234,56)
+    pub fn cop() -> Self {
+        Self {
+            symbol: "$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::european(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Chilean Peso format ($1.234)
+    pub fn clp() -> Self {
+        Self {
+            symbol: "$".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::european(),
+            decimal_places: 0,
+        }
+    }
+
+    /// Peruvian Sol format (S/1,234.56)
+    pub fn pen() -> Self {
+        Self {
+            symbol: "S/".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Czech Koruna format (1 234,56 Kč)
+    pub fn czk() -> Self {
+        Self {
+            symbol: "Kč".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Hungarian Forint format (1 234 Ft)
+    pub fn huf() -> Self {
+        Self {
+            symbol: "Ft".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 0,
+        }
+    }
+
+    /// Romanian Leu format (1.234,56 lei)
+    pub fn ron() -> Self {
+        Self {
+            symbol: "lei".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::european(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Ukrainian Hryvnia format (1 234,56 ₴)
+    pub fn uah() -> Self {
+        Self {
+            symbol: "₴".into(),
+            symbol_position: CurrencySymbolPosition::After,
+            space_between: true,
+            number_format: NumberFormat::french(),
+            decimal_places: 2,
+        }
+    }
+
+    /// Bitcoin format (₿0.12345678)
+    pub fn btc() -> Self {
+        Self {
+            symbol: "₿".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 8,
+        }
+    }
+
+    /// Ethereum format (Ξ0.123456)
+    pub fn eth() -> Self {
+        Self {
+            symbol: "Ξ".into(),
+            symbol_position: CurrencySymbolPosition::Before,
+            space_between: false,
+            number_format: NumberFormat::us(),
+            decimal_places: 6,
+        }
+    }
+
+    /// Get currency format by ISO 4217 code
+    pub fn by_code(code: &str) -> Option<Self> {
+        match code.to_uppercase().as_str() {
+            "USD" => Some(Self::usd()),
+            "EUR" => Some(Self::eur()),
+            "GBP" => Some(Self::gbp()),
+            "BRL" => Some(Self::brl()),
+            "JPY" => Some(Self::jpy()),
+            "CNY" | "RMB" => Some(Self::cny()),
+            "KRW" => Some(Self::krw()),
+            "INR" => Some(Self::inr()),
+            "CHF" => Some(Self::chf()),
+            "CAD" => Some(Self::cad()),
+            "AUD" => Some(Self::aud()),
+            "MXN" => Some(Self::mxn()),
+            "RUB" => Some(Self::rub()),
+            "TRY" => Some(Self::try_lira()),
+            "ZAR" => Some(Self::zar()),
+            "PLN" => Some(Self::pln()),
+            "SEK" => Some(Self::sek()),
+            "NOK" => Some(Self::nok()),
+            "DKK" => Some(Self::dkk()),
+            "SGD" => Some(Self::sgd()),
+            "HKD" => Some(Self::hkd()),
+            "NZD" => Some(Self::nzd()),
+            "THB" => Some(Self::thb()),
+            "IDR" => Some(Self::idr()),
+            "MYR" => Some(Self::myr()),
+            "PHP" => Some(Self::php()),
+            "VND" => Some(Self::vnd()),
+            "SAR" => Some(Self::sar()),
+            "AED" => Some(Self::aed()),
+            "ILS" => Some(Self::ils()),
+            "EGP" => Some(Self::egp()),
+            "NGN" => Some(Self::ngn()),
+            "ARS" => Some(Self::ars()),
+            "COP" => Some(Self::cop()),
+            "CLP" => Some(Self::clp()),
+            "PEN" => Some(Self::pen()),
+            "CZK" => Some(Self::czk()),
+            "HUF" => Some(Self::huf()),
+            "RON" => Some(Self::ron()),
+            "UAH" => Some(Self::uah()),
+            "BTC" => Some(Self::btc()),
+            "ETH" => Some(Self::eth()),
+            _ => None,
+        }
+    }
+
+    /// Get all supported currency codes
+    pub fn supported_codes() -> &'static [&'static str] {
+        &[
+            "USD", "EUR", "GBP", "BRL", "JPY", "CNY", "KRW", "INR", "CHF", "CAD",
+            "AUD", "MXN", "RUB", "TRY", "ZAR", "PLN", "SEK", "NOK", "DKK", "SGD",
+            "HKD", "NZD", "THB", "IDR", "MYR", "PHP", "VND", "SAR", "AED", "ILS",
+            "EGP", "NGN", "ARS", "COP", "CLP", "PEN", "CZK", "HUF", "RON", "UAH",
+            "BTC", "ETH",
+        ]
+    }
+
     /// Format a currency amount
     pub fn format(&self, amount: f64) -> String {
         let is_negative = amount < 0.0;

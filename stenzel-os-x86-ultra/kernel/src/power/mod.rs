@@ -15,6 +15,10 @@ pub mod suspend;
 pub mod cpufreq;
 pub mod profiles;
 pub mod resume_speed;
+pub mod wol;
+pub mod wake_usb;
+pub mod hybrid_sleep;
+pub mod wake_timers;
 
 use alloc::string::String;
 use alloc::vec::Vec;

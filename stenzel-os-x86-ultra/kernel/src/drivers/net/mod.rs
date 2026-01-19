@@ -4,18 +4,23 @@
 //! - VirtIO-net (QEMU, KVM)
 //! - Intel E1000/E1000e (QEMU, VMware, real hardware)
 //! - Intel I210/I211/I217/I218/I219 (Gigabit Ethernet, real hardware)
+//! - Intel I225/I226 (2.5 Gigabit Ethernet, real hardware)
 //! - Realtek RTL8139 (10/100 Mbps, QEMU, real hardware)
 //! - Realtek RTL8169/8168/8111 (Gigabit Ethernet, real hardware)
+//! - Realtek RTL8125 (2.5 Gigabit Ethernet, real hardware)
 //! - Intel WiFi (iwlwifi - various Intel wireless adapters)
 //! - Intel WiFi 7 (iwlwifi_be - BE200/BE202 802.11be adapters)
 //! - Atheros WiFi (ath9k - AR9xxx/QCA series wireless adapters)
 //! - Broadcom WiFi (brcmfmac - BCM43xx series wireless adapters)
+//! - USB Ethernet (CDC-ECM, CDC-NCM, RNDIS, ASIX, Realtek)
 
 pub mod virtio_net;
 pub mod e1000;
 pub mod igb;
+pub mod igc;
 pub mod rtl8139;
 pub mod rtl8169;
+pub mod rtl8125;
 pub mod iwlwifi;
 pub mod iwlwifi_be;
 pub mod ath9k;
@@ -25,6 +30,10 @@ pub mod rtl8xxxu_wifi;
 pub mod mt7921;
 pub mod brcmfmac;
 pub mod ath11k;
+pub mod modem;
+pub mod sim;
+pub mod sms;
+pub mod usb_ethernet;
 
 use alloc::vec::Vec;
 use crate::util::KResult;
@@ -36,8 +45,10 @@ enum ActiveDriver {
     VirtioNet,
     E1000,
     Igb,
+    Igc,
     Rtl8139,
     Rtl8169,
+    Rtl8125,
 }
 
 static mut ACTIVE_DRIVER: ActiveDriver = ActiveDriver::None;
@@ -66,6 +77,13 @@ pub fn init() {
         return;
     }
 
+    // Try IGC (Intel I225/I226 2.5GbE)
+    igc::init();
+    if igc::get_mac().is_some() {
+        unsafe { ACTIVE_DRIVER = ActiveDriver::Igc; }
+        return;
+    }
+
     // Try RTL8139
     rtl8139::init();
     if rtl8139::get_mac().is_some() {
@@ -77,6 +95,13 @@ pub fn init() {
     rtl8169::init();
     if rtl8169::get_mac().is_some() {
         unsafe { ACTIVE_DRIVER = ActiveDriver::Rtl8169; }
+        return;
+    }
+
+    // Try RTL8125 (2.5 Gigabit)
+    rtl8125::init();
+    if rtl8125::get_mac().is_some() {
+        unsafe { ACTIVE_DRIVER = ActiveDriver::Rtl8125; }
         return;
     }
 
@@ -101,6 +126,9 @@ pub fn init() {
     // Try Atheros WiFi 6 (ath11k - QCA6390/WCN6855)
     ath11k::init();
 
+    // Initialize USB Ethernet subsystem (hotplug capable)
+    usb_ethernet::init();
+
     unsafe { ACTIVE_DRIVER = ActiveDriver::None; }
 }
 
@@ -110,8 +138,10 @@ pub fn get_mac() -> Option<[u8; 6]> {
         ActiveDriver::VirtioNet => virtio_net::get_mac(),
         ActiveDriver::E1000 => e1000::get_mac(),
         ActiveDriver::Igb => igb::get_mac(),
+        ActiveDriver::Igc => igc::get_mac(),
         ActiveDriver::Rtl8139 => rtl8139::get_mac(),
         ActiveDriver::Rtl8169 => rtl8169::get_mac(),
+        ActiveDriver::Rtl8125 => rtl8125::get_mac(),
         ActiveDriver::None => None,
     }
 }
@@ -122,8 +152,10 @@ pub fn send(data: &[u8]) -> KResult<()> {
         ActiveDriver::VirtioNet => virtio_net::send(data),
         ActiveDriver::E1000 => e1000::send(data),
         ActiveDriver::Igb => igb::send(data),
+        ActiveDriver::Igc => igc::send(data),
         ActiveDriver::Rtl8139 => rtl8139::send(data),
         ActiveDriver::Rtl8169 => rtl8169::send(data),
+        ActiveDriver::Rtl8125 => rtl8125::send(data),
         ActiveDriver::None => Err(crate::util::KError::NotSupported),
     }
 }
@@ -134,8 +166,10 @@ pub fn recv() -> Option<Vec<u8>> {
         ActiveDriver::VirtioNet => virtio_net::recv(),
         ActiveDriver::E1000 => e1000::recv(),
         ActiveDriver::Igb => igb::recv(),
+        ActiveDriver::Igc => igc::recv(),
         ActiveDriver::Rtl8139 => rtl8139::recv(),
         ActiveDriver::Rtl8169 => rtl8169::recv(),
+        ActiveDriver::Rtl8125 => rtl8125::recv(),
         ActiveDriver::None => None,
     }
 }
@@ -146,8 +180,10 @@ pub fn driver_name() -> &'static str {
         ActiveDriver::VirtioNet => "virtio-net",
         ActiveDriver::E1000 => "e1000",
         ActiveDriver::Igb => "igb",
+        ActiveDriver::Igc => "igc",
         ActiveDriver::Rtl8139 => "rtl8139",
         ActiveDriver::Rtl8169 => "rtl8169",
+        ActiveDriver::Rtl8125 => "rtl8125",
         ActiveDriver::None => "none",
     }
 }

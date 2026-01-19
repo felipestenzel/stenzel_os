@@ -73,7 +73,37 @@ pub fn init() {
     if let Some((width, height)) = compositor::screen_size() {
         desktop::init(width, height);
         taskbar::init(width);
+
+        // Set a default gradient wallpaper
+        use crate::drivers::framebuffer::Color;
+        desktop::set_wallpaper(desktop::Wallpaper::VerticalGradient {
+            start: Color::new(25, 25, 112),  // Midnight blue
+            end: Color::new(0, 0, 50),        // Dark navy
+        });
+
+        // Add some default desktop icons
+        desktop::add_icon(desktop::DesktopIcon::new("Files", 0, 0, "/usr/bin/filemanager"));
+        desktop::add_icon(desktop::DesktopIcon::new("Terminal", 0, 1, "/bin/sh"));
+        desktop::add_icon(desktop::DesktopIcon::new("Settings", 0, 2, "/usr/bin/settings"));
     }
 
+    // Do initial render to show desktop
+    render();
+
     crate::kprintln!("gui: initialized");
+}
+
+/// Render the GUI (compose and present)
+pub fn render() {
+    compositor::compose();
+    compositor::present();
+}
+
+/// Update the GUI (called from timer interrupt or main loop)
+pub fn update() {
+    // Process any pending animations
+    let current_time = crate::time::uptime_ms();
+    animations::update(current_time);
+    // Render the scene
+    render();
 }

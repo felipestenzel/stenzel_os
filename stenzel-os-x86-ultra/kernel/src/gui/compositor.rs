@@ -37,6 +37,12 @@ pub struct Compositor {
     dirty_regions: Vec<DirtyRect>,
     /// Whether the compositor is enabled
     enabled: bool,
+    /// Cursor X position
+    cursor_x: isize,
+    /// Cursor Y position
+    cursor_y: isize,
+    /// Whether cursor is visible
+    cursor_visible: bool,
 }
 
 impl Compositor {
@@ -60,6 +66,69 @@ impl Compositor {
             needs_full_redraw: true,
             dirty_regions: Vec::new(),
             enabled: true,
+            cursor_x: (screen_width / 2) as isize,
+            cursor_y: (screen_height / 2) as isize,
+            cursor_visible: true,
+        }
+    }
+
+    /// Move cursor by relative amount
+    pub fn move_cursor(&mut self, dx: i32, dy: i32) {
+        self.cursor_x = (self.cursor_x + dx as isize).clamp(0, self.screen_width as isize - 1);
+        self.cursor_y = (self.cursor_y + dy as isize).clamp(0, self.screen_height as isize - 1);
+        self.needs_full_redraw = true;
+    }
+
+    /// Set cursor position
+    pub fn set_cursor_pos(&mut self, x: isize, y: isize) {
+        self.cursor_x = x.clamp(0, self.screen_width as isize - 1);
+        self.cursor_y = y.clamp(0, self.screen_height as isize - 1);
+        self.needs_full_redraw = true;
+    }
+
+    /// Get cursor position
+    pub fn cursor_pos(&self) -> (isize, isize) {
+        (self.cursor_x, self.cursor_y)
+    }
+
+    /// Draw a simple arrow cursor at the given position (static helper)
+    fn draw_cursor_at(surface: &mut Surface, x: usize, y: usize, screen_width: usize, screen_height: usize) {
+        // Simple arrow cursor (12x19 pixels)
+        const CURSOR: &[&[u8]] = &[
+            b"X............",
+            b"XX...........",
+            b"XWX..........",
+            b"XWWX.........",
+            b"XWWWX........",
+            b"XWWWWX.......",
+            b"XWWWWWX......",
+            b"XWWWWWWX.....",
+            b"XWWWWWWWX....",
+            b"XWWWWWWWWX...",
+            b"XWWWWWWWWWX..",
+            b"XWWWWWWXXXX..",
+            b"XWWWXWWX.....",
+            b"XWWX.XWX.....",
+            b"XWX..XWX.....",
+            b"XX....XWX....",
+            b"X.....XWX....",
+            b"......XWX....",
+            b".......XX....",
+        ];
+
+        for (cy, row) in CURSOR.iter().enumerate() {
+            for (cx, &pixel) in row.iter().enumerate() {
+                let px = x + cx;
+                let py = y + cy;
+                if px < screen_width && py < screen_height {
+                    let color = match pixel {
+                        b'X' => Color::BLACK,
+                        b'W' => Color::WHITE,
+                        _ => continue,
+                    };
+                    surface.set_pixel(px, py, color);
+                }
+            }
         }
     }
 
@@ -227,8 +296,13 @@ impl Compositor {
         }
 
         // For now, always do full redraw (optimization: use dirty regions)
-        // Clear background
-        self.back_buffer.clear(self.background_color);
+        // Render desktop (wallpaper + icons) as background
+        if super::desktop::is_available() {
+            super::desktop::render_to(&mut self.back_buffer);
+        } else {
+            // Fallback: clear with solid color
+            self.back_buffer.clear(self.background_color);
+        }
 
         // Draw windows back to front
         for &id in self.window_order.iter().rev() {
@@ -237,6 +311,15 @@ impl Compositor {
                     window.render(&mut self.back_buffer, None);
                 }
             }
+        }
+
+        // Draw cursor on top of everything
+        if self.cursor_visible {
+            let cx = self.cursor_x as usize;
+            let cy = self.cursor_y as usize;
+            let sw = self.screen_width;
+            let sh = self.screen_height;
+            Self::draw_cursor_at(&mut self.back_buffer, cx, cy, sw, sh);
         }
 
         // Clear dirty flags
@@ -411,6 +494,28 @@ pub fn update() {
     if let Some(ref mut c) = *comp {
         c.update();
     }
+}
+
+/// Move the cursor by relative amount
+pub fn move_cursor(dx: i32, dy: i32) {
+    let mut comp = COMPOSITOR.lock();
+    if let Some(ref mut c) = *comp {
+        c.move_cursor(dx, dy);
+    }
+}
+
+/// Set cursor position
+pub fn set_cursor_pos(x: isize, y: isize) {
+    let mut comp = COMPOSITOR.lock();
+    if let Some(ref mut c) = *comp {
+        c.set_cursor_pos(x, y);
+    }
+}
+
+/// Get cursor position
+pub fn cursor_pos() -> Option<(isize, isize)> {
+    let comp = COMPOSITOR.lock();
+    comp.as_ref().map(|c| c.cursor_pos())
 }
 
 /// Compose windows (without presenting)

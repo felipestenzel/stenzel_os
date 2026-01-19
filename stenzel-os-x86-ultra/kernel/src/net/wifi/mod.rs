@@ -13,6 +13,7 @@ pub mod wpa;
 pub mod wpa3;
 pub mod connection;
 pub mod hotspot;
+pub mod p2p;
 pub mod wifi6e;
 
 use alloc::string::String;
